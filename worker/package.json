@@ -1,0 +1,1 @@
+{"name":"zynova-virtual-tryon","type":"module","private":true,"scripts":{"test":"node --test test/*.test.mjs","dev":"wrangler dev","deploy":"wrangler deploy"},"devDependencies":{"wrangler":"^4"}}

@@ -1,0 +1,76 @@
+{%- comment -%}
+  Zynova Virtual Try-On — section wrapper (add from Theme Customizer on the product template).
+  The UI lives in snippets/zy-virtual-tryon.liquid.
+{%- endcomment -%}
+{%- liquid
+  assign s = section.settings
+  assign kw = s.jewelry_keywords | strip
+-%}
+<div class="zy-vto-section page-width" style="max-width: {{ s.max_width }}px; margin: {{ s.margin_top }}px auto {{ s.margin_bottom }}px; padding: 0 16px;">
+  {%- if s.heading != blank -%}
+    <h2 class="zy-vto-section__heading" style="text-align:{{ s.align }};margin:0 0 6px;">{{ s.heading | escape }}</h2>
+  {%- endif -%}
+  {%- if s.text != blank -%}
+    <div class="zy-vto-section__text" style="text-align:{{ s.align }};margin:0 0 10px;">{{ s.text }}</div>
+  {%- endif -%}
+
+  {%- if s.worker_url == blank or s.client_id == blank -%}
+    {%- if request.design_mode -%}
+      <p style="padding:12px;border:1px dashed #c00;color:#c00;">Virtual Try-On: add the Worker URL and Client ID in this section's settings.</p>
+    {%- endif -%}
+  {%- else -%}
+    {%- render 'zy-virtual-tryon',
+      product: product,
+      worker_url: s.worker_url,
+      client_id: s.client_id,
+      mode: s.mode,
+      label: s.label,
+      accent: s.accent,
+      accent_text: s.accent_text,
+      show_atc: s.show_atc,
+      jewelry_keywords: kw,
+      uid: section.id
+    -%}
+  {%- endif -%}
+</div>
+
+{% schema %}
+{
+  "name": "Virtual Try-On",
+  "tag": "section",
+  "class": "zy-vto-wrap",
+  "enabled_on": { "templates": ["product"] },
+  "settings": [
+    { "type": "header", "content": "Connection" },
+    { "type": "text", "id": "worker_url", "label": "Worker URL", "info": "e.g. https://zynova-virtual-tryon.yourname.workers.dev" },
+    { "type": "text", "id": "client_id", "label": "Client ID", "info": "Must match the key in the Worker's CLIENTS config, e.g. miacara" },
+    { "type": "header", "content": "Behaviour" },
+    {
+      "type": "select", "id": "mode", "label": "Product type", "default": "auto",
+      "options": [
+        { "value": "auto", "label": "Auto-detect (clothing / jewellery)" },
+        { "value": "clothing", "label": "Always clothing" },
+        { "value": "jewelry", "label": "Always jewellery" }
+      ],
+      "info": "Product tags override this: tryon:clothing, tryon:jewelry, tryon:earrings, tryon:off …"
+    },
+    { "type": "textarea", "id": "jewelry_keywords", "label": "Jewellery keywords (auto mode)", "info": "Comma separated. Matched against product title, type and tags. Leave empty for defaults." },
+    { "type": "checkbox", "id": "show_atc", "label": "Show Add to cart on result", "default": true },
+    { "type": "header", "content": "Content" },
+    { "type": "text", "id": "heading", "label": "Heading" },
+    { "type": "richtext", "id": "text", "label": "Text" },
+    { "type": "text", "id": "label", "label": "Button label", "default": "Try it on yourself" },
+    { "type": "header", "content": "Style" },
+    { "type": "color", "id": "accent", "label": "Accent colour", "default": "#111111" },
+    { "type": "color", "id": "accent_text", "label": "Accent text colour", "default": "#ffffff" },
+    {
+      "type": "select", "id": "align", "label": "Text alignment", "default": "center",
+      "options": [ { "value": "left", "label": "Left" }, { "value": "center", "label": "Center" } ]
+    },
+    { "type": "range", "id": "max_width", "label": "Max width", "min": 300, "max": 1200, "step": 20, "unit": "px", "default": 520 },
+    { "type": "range", "id": "margin_top", "label": "Top spacing", "min": 0, "max": 80, "step": 4, "unit": "px", "default": 16 },
+    { "type": "range", "id": "margin_bottom", "label": "Bottom spacing", "min": 0, "max": 80, "step": 4, "unit": "px", "default": 24 }
+  ],
+  "presets": [ { "name": "Virtual Try-On" } ]
+}
+{% endschema %}

@@ -1,0 +1,475 @@
+{%- comment -%}
+  Zynova Virtual Try-On &mdash; snippet
+  Usage (product template, e.g. a "Custom liquid" block under Add to cart):
+    {% render 'zy-virtual-tryon', product: product, worker_url: 'https://zynova-virtual-tryon.XXXX.workers.dev', client_id: 'miacara' %}
+
+  Optional params:
+    mode              'auto' | 'clothing' | 'jewelry'   (default auto)
+    label             button text                       (default 'Try it on yourself')
+    accent            hex colour                        (default #111111)
+    accent_text       hex colour                        (default #ffffff)
+    show_atc          true/false                        (default true)
+    jewelry_keywords  comma list used by auto mode
+    uid               unique id (only if rendered twice on a page)
+
+  Per-product control with product tags:
+    tryon:off        hide the button on this product
+    tryon:clothing   force clothing
+    tryon:jewelry    force jewellery
+    tryon:earrings | tryon:necklace | tryon:ring | tryon:bangles | tryon:nosepin | tryon:tikka | tryon:watch | tryon:anklet
+{%- endcomment -%}
+
+{%- liquid
+  assign zy_tags = product.tags | join: '|' | downcase
+  assign zy_hidden = false
+  if zy_tags contains 'tryon:off'
+    assign zy_hidden = true
+  endif
+  if product == blank or product.images.size == 0
+    assign zy_hidden = true
+  endif
+  assign zy_uid = uid | default: product.id | prepend: 'zyvto-'
+  assign zy_mode = mode | default: 'auto'
+  assign zy_label = label | default: 'Try it on yourself'
+  assign zy_accent = accent | default: '#111111'
+  assign zy_accent_text = accent_text | default: '#ffffff'
+  assign zy_kw = jewelry_keywords | default: 'jewelry, jewellery, jewel, earring, earrings, jhumka, jhumkay, jhumki, necklace, choker, pendant, ring, rings, bangle, bangles, bracelet, kangan, kara, nose pin, nath, tikka, matha patti, anklet, payal, watch'
+  if show_atc == false
+    assign zy_atc = false
+  else
+    assign zy_atc = true
+  endif
+-%}
+
+{%- unless zy_hidden -%}
+<div class="zy-vto" id="{{ zy_uid }}" data-zy-vto style="--zy-accent: {{ zy_accent }}; --zy-accent-text: {{ zy_accent_text }};">
+  <script type="application/json" data-zy-vto-config>
+    {
+      "workerUrl": {{ worker_url | json }},
+      "clientId": {{ client_id | json }},
+      "mode": {{ zy_mode | json }},
+      "showAtc": {{ zy_atc | json }},
+      "jewelryKeywords": {{ zy_kw | json }},
+      "title": {{ product.title | json }},
+      "type": {{ product.type | json }},
+      "tags": {{ product.tags | json }},
+      "selectedVariant": {{ product.selected_or_first_available_variant.id | json }},
+      "images": [
+        {%- for img in product.images limit: 8 -%}
+          {"id": {{ img.id | json }}, "src": {{ img | image_url: width: 1024 | json }}, "thumb": {{ img | image_url: width: 160 | json }}, "alt": {{ img.alt | default: product.title | json }}}{% unless forloop.last %},{% endunless %}
+        {%- endfor -%}
+      ],
+      "variants": [
+        {%- for v in product.variants -%}
+          {"id": {{ v.id | json }}, "imageId": {{ v.featured_image.id | json }}, "available": {{ v.available | json }}}{% unless forloop.last %},{% endunless %}
+        {%- endfor -%}
+      ]
+    }
+  </script>
+
+  <button type="button" class="zy-vto__open" data-zy-open>
+    <svg aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 8V6a2 2 0 0 1 2-2h2M16 4h2a2 2 0 0 1 2 2v2M20 16v2a2 2 0 0 1-2 2h-2M8 20H6a2 2 0 0 1-2-2v-2"/><circle cx="12" cy="10" r="3"/><path d="M7 18c.8-2.3 2.7-3.5 5-3.5s4.2 1.2 5 3.5"/></svg>
+    <span>{{ zy_label | escape }}</span>
+  </button>
+
+  <div class="zy-vto__modal" data-zy-modal role="dialog" aria-modal="true" aria-labelledby="{{ zy_uid }}-title" hidden>
+    <div class="zy-vto__backdrop" data-zy-close></div>
+    <div class="zy-vto__panel">
+      <button type="button" class="zy-vto__x" data-zy-close aria-label="Close">&times;</button>
+      <h2 class="zy-vto__title" id="{{ zy_uid }}-title">Try it on</h2>
+
+      {%- comment -%} STEP 1: upload {%- endcomment -%}
+      <div class="zy-vto__step" data-zy-step="upload">
+        <p class="zy-vto__tip" data-zy-tip></p>
+
+        <label class="zy-vto__drop" data-zy-drop>
+          <input type="file" accept="image/jpeg,image/png,image/webp,image/*" data-zy-file hidden>
+          <img alt="Your photo" data-zy-preview width="768" height="1024" hidden>
+          <span class="zy-vto__drop-text" data-zy-drop-text>
+            <strong>Upload your photo</strong><br>
+            <small>JPG or PNG &middot; tap to choose or take a photo</small>
+          </span>
+        </label>
+
+        <div class="zy-vto__ref" data-zy-ref-wrap>
+          <p class="zy-vto__label">Product to try</p>
+          <div class="zy-vto__thumbs" data-zy-thumbs role="radiogroup" aria-label="Product image"></div>
+        </div>
+
+        <label class="zy-vto__consent">
+          <input type="checkbox" data-zy-consent>
+          <span>I agree my photo is sent to an AI service only to create this preview. It is not saved.</span>
+        </label>
+
+        <p class="zy-vto__error" data-zy-error role="alert" hidden></p>
+
+        <button type="button" class="zy-vto__primary" data-zy-generate disabled>Generate my look</button>
+      </div>
+
+      {%- comment -%} STEP 2: loading {%- endcomment -%}
+      <div class="zy-vto__step" data-zy-step="loading" hidden>
+        <div class="zy-vto__spinner" aria-hidden="true"></div>
+        <p class="zy-vto__loading-text" data-zy-loading-text aria-live="polite">Creating your look&hellip;</p>
+        <small class="zy-vto__muted">This usually takes 10&ndash;30 seconds.</small>
+      </div>
+
+      {%- comment -%} STEP 3: result {%- endcomment -%}
+      <div class="zy-vto__step" data-zy-step="result" hidden>
+        <div class="zy-vto__result">
+          <img alt="AI try-on preview" data-zy-result width="768" height="1024">
+        </div>
+        <p class="zy-vto__muted zy-vto__center">AI preview &mdash; actual colour, size and fit may vary.</p>
+        <div class="zy-vto__actions">
+          {%- if zy_atc -%}
+            <button type="button" class="zy-vto__primary" data-zy-atc>Add to cart</button>
+          {%- endif -%}
+          <a class="zy-vto__secondary" data-zy-download download="my-try-on.png" href="#">Download</a>
+          <button type="button" class="zy-vto__secondary" data-zy-again>Try another photo</button>
+        </div>
+        <p class="zy-vto__atc-msg" data-zy-atc-msg aria-live="polite" hidden></p>
+      </div>
+    </div>
+  </div>
+</div>
+
+{%- comment -%} CSS + JS: printed once per page even if the snippet is rendered more than once {%- endcomment -%}
+<style>
+  .zy-vto{margin:12px 0;font:inherit}
+  .zy-vto *,.zy-vto__modal *{box-sizing:border-box}
+  .zy-vto__open{display:flex;align-items:center;justify-content:center;gap:8px;width:100%;min-height:48px;padding:12px 18px;border:1.5px solid var(--zy-accent);background:transparent;color:var(--zy-accent);font:inherit;font-weight:600;letter-spacing:.02em;cursor:pointer;border-radius:4px;transition:background .2s,color .2s}
+  .zy-vto__open:hover,.zy-vto__open:focus-visible{background:var(--zy-accent);color:var(--zy-accent-text)}
+  .zy-vto__modal[hidden]{display:none}
+  .zy-vto__modal{font-family:inherit;position:fixed;inset:0;z-index:2147483000;display:flex;align-items:center;justify-content:center;padding:16px}
+  .zy-vto__backdrop{position:absolute;inset:0;background:rgba(0,0,0,.55)}
+  .zy-vto__panel{position:relative;width:100%;max-width:480px;max-height:calc(100vh - 32px);overflow:auto;background:#fff;color:#111;border-radius:12px;padding:24px 20px 20px;box-shadow:0 20px 60px rgba(0,0,0,.3)}
+  .zy-vto__x{position:absolute;top:8px;right:10px;width:36px;height:36px;border:0;background:transparent;font-size:28px;line-height:1;cursor:pointer;color:#111}
+  .zy-vto__title{margin:0 0 6px;font-size:20px;line-height:1.3}
+  .zy-vto__tip{margin:0 0 14px;font-size:14px;color:#555;line-height:1.45}
+  .zy-vto__drop{display:flex;align-items:center;justify-content:center;min-height:200px;border:1.5px dashed #bbb;border-radius:10px;background:#fafafa;cursor:pointer;overflow:hidden;text-align:center;padding:12px}
+  .zy-vto__drop:hover{border-color:var(--zy-accent)}
+  .zy-vto__drop img{width:auto;height:auto;max-width:100%;max-height:320px;border-radius:6px;display:block}
+  .zy-vto__drop-text{font-size:15px;color:#333}
+  .zy-vto__drop-text small{color:#777}
+  .zy-vto__label{margin:16px 0 8px;font-size:13px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:#444}
+  .zy-vto__thumbs{display:flex;gap:8px;overflow-x:auto;padding-bottom:4px}
+  .zy-vto__thumb{flex:0 0 64px;height:80px;padding:0;border:2px solid transparent;border-radius:6px;overflow:hidden;cursor:pointer;background:#f2f2f2}
+  .zy-vto__thumb img{width:100%;height:100%;object-fit:cover;display:block}
+  .zy-vto__thumb[aria-checked="true"]{border-color:var(--zy-accent)}
+  .zy-vto__consent{display:flex;gap:10px;align-items:flex-start;margin:16px 0 0;font-size:13px;color:#444;line-height:1.4;cursor:pointer}
+  .zy-vto__consent input{margin-top:2px;flex:0 0 auto;width:16px;height:16px}
+  .zy-vto__error{margin:12px 0 0;padding:10px 12px;border-radius:6px;background:#fdecec;color:#9b1c1c;font-size:14px}
+  .zy-vto__primary,.zy-vto__secondary{display:inline-flex;align-items:center;justify-content:center;min-height:46px;padding:12px 18px;font:inherit;font-weight:600;border-radius:6px;cursor:pointer;text-decoration:none}
+  .zy-vto__primary{width:100%;margin-top:16px;border:0;background:var(--zy-accent);color:var(--zy-accent-text)}
+  .zy-vto__primary:disabled{opacity:.4;cursor:not-allowed}
+  .zy-vto__secondary{border:1.5px solid #ccc;background:#fff;color:#111}
+  .zy-vto__step[hidden]{display:none}
+  .zy-vto__step[data-zy-step="loading"]{text-align:center;padding:40px 0}
+  .zy-vto__spinner{width:44px;height:44px;margin:0 auto 16px;border:4px solid #eee;border-top-color:var(--zy-accent);border-radius:50%;animation:zyvtospin 0.9s linear infinite}
+  @keyframes zyvtospin{to{transform:rotate(360deg)}}
+  @media (prefers-reduced-motion: reduce){.zy-vto__spinner{animation-duration:3s}}
+  .zy-vto__loading-text{margin:0 0 6px;font-weight:600}
+  .zy-vto__muted{color:#777;font-size:12.5px}
+  .zy-vto__center{text-align:center;display:block;margin:8px 0 0}
+  .zy-vto__result img{width:100%;height:auto;border-radius:8px;display:block;background:#f2f2f2}
+  .zy-vto__actions{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:4px}
+  .zy-vto__actions .zy-vto__primary{grid-column:1/-1}
+  .zy-vto__atc-msg{margin:10px 0 0;font-size:14px;text-align:center}
+  .zy-vto__atc-msg a{color:inherit;text-decoration:underline}
+  @media (max-width:600px){
+    .zy-vto__modal{padding:0;align-items:flex-end}
+    .zy-vto__panel{max-width:none;max-height:94vh;border-radius:14px 14px 0 0}
+  }
+  html.zy-vto-lock{overflow:hidden}
+  .zy-vto [hidden],.zy-vto__modal [hidden]{display:none!important}
+</style>
+
+<script>
+(function () {
+  if (window.__zyVTO) { window.__zyVTO.scan(); return; }
+
+  var SUBTYPES = [
+    ['necklace', /\b(necklace|necklaces|choker|pendant|chain|haar|mala|locket)\b/],
+    ['tikka', /\b(tikka|maang tikka|matha patti|jhoomar|passa)\b/],
+    ['nosepin', /\b(nose ?pin|nath|nose ring)\b/],
+    ['bangles', /\b(bangle|bangles|bracelet|bracelets|kangan|kara|churi|churiyan)\b/],
+    ['earrings', /\b(earring|earrings|jhumka|jhumkay|jhumki|studs?|hoops?|bali|baliyan)\b/],
+    ['ring', /\b(ring|rings|anguthi)\b/],
+    ['watch', /\b(watch|watches)\b/],
+    ['anklet', /\b(anklet|anklets|payal)\b/]
+  ];
+  var TIPS = {
+    clothing: 'For best results use a clear, well-lit photo of yourself standing straight, facing the camera, with your full body (or at least head to knees) visible. Plain background works best.',
+    jewelry: 'Use a clear, well-lit close-up where the area is visible \u2014 ears and neck for earrings / necklaces, your hand for rings and bangles.'
+  };
+  var MSGS = ['Creating your look\u2026', 'Matching the fabric and details\u2026', 'Adjusting fit and lighting\u2026', 'Almost there\u2026'];
+
+  function esc(s) { return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
+
+  function detect(cfg) {
+    var tags = (cfg.tags || []).map(function (t) { return String(t).toLowerCase().trim(); });
+    var forced = null, sub = null;
+    tags.forEach(function (t) {
+      if (t.indexOf('tryon:') !== 0) return;
+      var v = t.slice(6);
+      if (v === 'clothing' || v === 'jewelry') forced = v;
+      SUBTYPES.forEach(function (s) { if (s[0] === v) { sub = v; forced = forced || 'jewelry'; } });
+    });
+    var hay = [cfg.title, cfg.type, tags.join(' ')].join(' ').toLowerCase();
+    var cat = forced || (cfg.mode === 'clothing' || cfg.mode === 'jewelry' ? cfg.mode : null);
+    if (!cat) {
+      var kws = String(cfg.jewelryKeywords || '').split(',').map(function (k) { return k.trim().toLowerCase(); }).filter(Boolean);
+      var isJ = kws.some(function (k) { return new RegExp('(^|[^a-z])' + esc(k) + '([^a-z]|$)').test(hay); });
+      cat = isJ ? 'jewelry' : 'clothing';
+    }
+    if (cat === 'jewelry' && !sub) {
+      for (var i = 0; i < SUBTYPES.length; i++) { if (SUBTYPES[i][1].test(hay)) { sub = SUBTYPES[i][0]; break; } }
+    }
+    return { category: cat, subtype: cat === 'jewelry' ? (sub || 'jewelry') : null };
+  }
+
+  function loadBitmap(blob) {
+    if (window.createImageBitmap) {
+      return createImageBitmap(blob, { imageOrientation: 'from-image' }).catch(function () { return loadViaImg(blob); });
+    }
+    return loadViaImg(blob);
+  }
+  function loadViaImg(blob) {
+    return new Promise(function (res, rej) {
+      var url = URL.createObjectURL(blob), img = new Image();
+      img.onload = function () { res(img); };
+      img.onerror = function () { URL.revokeObjectURL(url); rej(new Error('decode')); };
+      img.src = url;
+    });
+  }
+  /** Resize to max side, return { mime, data(base64), dataUrl } */
+  function toJpeg(blob, max) {
+    return loadBitmap(blob).then(function (bmp) {
+      var w = bmp.width, h = bmp.height;
+      if (!w || !h) throw new Error('decode');
+      var scale = Math.min(1, max / Math.max(w, h));
+      var c = document.createElement('canvas');
+      c.width = Math.round(w * scale); c.height = Math.round(h * scale);
+      var ctx = c.getContext('2d');
+      ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, c.width, c.height);
+      ctx.drawImage(bmp, 0, 0, c.width, c.height);
+      if (bmp.close) bmp.close();
+      var dataUrl = c.toDataURL('image/jpeg', 0.88);
+      return { mime: 'image/jpeg', data: dataUrl.split(',')[1], dataUrl: dataUrl };
+    });
+  }
+
+  function extractImage(j) {
+    var cands = (j && j.candidates) || [];
+    var found = null;
+    cands.forEach(function (c) {
+      ((c.content && c.content.parts) || []).forEach(function (p) {
+        var d = p.inlineData || p.inline_data;
+        if (d && d.data && !p.thought) found = { mime: d.mimeType || d.mime_type || 'image/png', data: d.data };
+      });
+    });
+    return found;
+  }
+  function noImageReason(j) {
+    var block = j && j.promptFeedback && j.promptFeedback.blockReason;
+    var fin = j && j.candidates && j.candidates[0] && j.candidates[0].finishReason;
+    if (block || /SAFETY|PROHIBITED|IMAGE_SAFETY|BLOCK/i.test(fin || '')) {
+      return 'The AI could not use this photo. Please try a different, fully-clothed photo of yourself.';
+    }
+    return 'The AI could not create a preview this time. Please try again, or use a clearer front-facing photo.';
+  }
+
+  function init(root) {
+    if (root.__zyReady) return; root.__zyReady = true;
+    var cfg;
+    try { cfg = JSON.parse(root.querySelector('[data-zy-vto-config]').textContent); } catch (e) { return; }
+    if (!cfg.workerUrl || !cfg.images || !cfg.images.length) { root.style.display = 'none'; return; }
+
+    var modal = root.querySelector('[data-zy-modal]');
+    var $ = function (s) { return root.querySelector(s) || modal.querySelector(s); };
+    // Portal the modal to <body> so theme transforms/overflow on parents can't break position:fixed,
+    // and so the file input is never inside the theme's product <form>.
+    modal.style.setProperty('--zy-accent', root.style.getPropertyValue('--zy-accent') || '#111');
+    modal.style.setProperty('--zy-accent-text', root.style.getPropertyValue('--zy-accent-text') || '#fff');
+    document.querySelectorAll('body > [data-zy-modal][data-zy-owner="' + root.id + '"]').forEach(function (m) { m.remove(); });
+    modal.setAttribute('data-zy-owner', root.id);
+    document.body.appendChild(modal);
+    var file = $('[data-zy-file]'), preview = $('[data-zy-preview]'),
+        dropText = $('[data-zy-drop-text]'), thumbs = $('[data-zy-thumbs]'), consent = $('[data-zy-consent]'),
+        gen = $('[data-zy-generate]'), err = $('[data-zy-error]'), result = $('[data-zy-result]'),
+        dl = $('[data-zy-download]'), atc = $('[data-zy-atc]'), atcMsg = $('[data-zy-atc-msg]'),
+        loadingText = $('[data-zy-loading-text]');
+    var det = detect(cfg);
+    var person = null, chosenImg = null, busy = false, msgTimer = null, lastFocus = null, resultUrl = null;
+
+    $('[data-zy-tip]').textContent = TIPS[det.category];
+    $('.zy-vto__title').textContent = det.category === 'jewelry' ? 'Try this jewellery on' : 'Try this outfit on';
+    root.setAttribute('data-zy-category', det.category);
+    if (det.subtype) root.setAttribute('data-zy-subtype', det.subtype);
+
+    function currentVariantId() {
+      var form = document.querySelector('form[action*="/cart/add"] [name="id"]');
+      var v = form && form.value ? Number(form.value) : null;
+      return v || cfg.selectedVariant;
+    }
+    function defaultImageId() {
+      var vid = currentVariantId();
+      var v = (cfg.variants || []).filter(function (x) { return x.id === vid; })[0];
+      return (v && v.imageId) || cfg.images[0].id;
+    }
+    function renderThumbs() {
+      thumbs.innerHTML = '';
+      var want = chosenImg || defaultImageId();
+      if (!cfg.images.some(function (i) { return i.id === want; })) want = cfg.images[0].id;
+      chosenImg = want;
+      cfg.images.forEach(function (im) {
+        var b = document.createElement('button');
+        b.type = 'button'; b.className = 'zy-vto__thumb';
+        b.setAttribute('role', 'radio');
+        b.setAttribute('aria-checked', String(im.id === want));
+        b.setAttribute('aria-label', im.alt || 'Product image');
+        var i = document.createElement('img'); i.src = im.thumb; i.alt = ''; i.loading = 'lazy';
+        b.appendChild(i);
+        b.addEventListener('click', function () { chosenImg = im.id; renderThumbs(); });
+        thumbs.appendChild(b);
+      });
+      if (cfg.images.length < 2) $('[data-zy-ref-wrap]').hidden = true;
+    }
+
+    function show(step) {
+      modal.querySelectorAll('[data-zy-step]').forEach(function (el) { el.hidden = el.getAttribute('data-zy-step') !== step; });
+    }
+    function setErr(m) { err.textContent = m || ''; err.hidden = !m; }
+    function refresh() { gen.disabled = !(person && consent.checked) || busy; }
+
+    function open() {
+      lastFocus = document.activeElement;
+      chosenImg = null; renderThumbs();
+      modal.hidden = false; document.documentElement.classList.add('zy-vto-lock');
+      if (!busy) show(resultUrl ? 'result' : 'upload');
+      setTimeout(function () { $('.zy-vto__x').focus(); }, 30);
+    }
+    function close() {
+      modal.hidden = true; document.documentElement.classList.remove('zy-vto-lock');
+      if (lastFocus && lastFocus.focus) lastFocus.focus();
+    }
+
+    $('[data-zy-open]').addEventListener('click', open);
+    modal.querySelectorAll('[data-zy-close]').forEach(function (b) { b.addEventListener('click', close); });
+    document.addEventListener('keydown', function (e) { if (e.key === 'Escape' && !modal.hidden) close(); });
+    consent.addEventListener('change', refresh);
+
+    file.addEventListener('change', function () {
+      var f = file.files && file.files[0];
+      setErr('');
+      if (!f) return;
+      if (f.size > 25 * 1024 * 1024) { setErr('That photo is too large. Please use one under 25 MB.'); return; }
+      person = null; refresh();
+      dropText.innerHTML = '<strong>Reading photo\u2026</strong>';
+      toJpeg(f, 1024).then(function (img) {
+        person = img;
+        preview.src = img.dataUrl; preview.hidden = false; dropText.hidden = true;
+        refresh();
+      }).catch(function () {
+        preview.hidden = true; dropText.hidden = false;
+        dropText.innerHTML = '<strong>Upload your photo</strong><br><small>JPG or PNG \u00b7 tap to choose or take a photo</small>';
+        setErr('We could not read that photo. Please use a JPG or PNG image.');
+      });
+    });
+
+    function stopMsgs() { if (msgTimer) clearInterval(msgTimer); msgTimer = null; }
+
+    gen.addEventListener('click', function () {
+      if (busy || !person || !consent.checked) return;
+      busy = true; refresh(); setErr('');
+      show('loading');
+      var mi = 0; loadingText.textContent = MSGS[0];
+      msgTimer = setInterval(function () { mi = Math.min(mi + 1, MSGS.length - 1); loadingText.textContent = MSGS[mi]; }, 7000);
+
+      var im = cfg.images.filter(function (i) { return i.id === chosenImg; })[0] || cfg.images[0];
+      var ctrl = window.AbortController ? new AbortController() : null;
+      var to = setTimeout(function () { if (ctrl) ctrl.abort(); }, 120000);
+
+      fetch(im.src, { credentials: 'omit' })
+        .then(function (r) { if (!r.ok) throw new Error('product'); return r.blob(); })
+        .then(function (b) { return toJpeg(b, 1024); })
+        .catch(function (e) { e.zy = 'Could not load the product image. Please refresh and try again.'; throw e; })
+        .then(function (prod) {
+          return fetch(cfg.workerUrl.replace(/\/+$/, '') + '/tryon', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            signal: ctrl ? ctrl.signal : undefined,
+            body: JSON.stringify({
+              clientId: cfg.clientId, category: det.category, subtype: det.subtype,
+              productTitle: cfg.title,
+              person: { mime: person.mime, data: person.data },
+              product: { mime: prod.mime, data: prod.data }
+            })
+          });
+        })
+        .then(function (r) {
+          return r.json().catch(function () { return {}; }).then(function (j) {
+            if (!r.ok) { var e = new Error('http'); e.zy = j.error || 'Something went wrong. Please try again.'; throw e; }
+            var out = extractImage(j);
+            if (!out) { var e2 = new Error('noimg'); e2.zy = noImageReason(j); throw e2; }
+            return out;
+          });
+        })
+        .then(function (out) {
+          resultUrl = 'data:' + out.mime + ';base64,' + out.data;
+          result.src = resultUrl;
+          dl.href = resultUrl;
+          dl.setAttribute('download', 'try-on-' + (cfg.title || 'look').toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 40) + (out.mime === 'image/jpeg' ? '.jpg' : '.png'));
+          if (atcMsg) atcMsg.hidden = true;
+          show('result');
+        })
+        .catch(function (e) {
+          var m = e && e.zy ? e.zy : (e && e.name === 'AbortError' ? 'This is taking too long. Please try again.' : 'Connection problem. Please check your internet and try again.');
+          show('upload'); setErr(m);
+        })
+        .then(function () { clearTimeout(to); stopMsgs(); busy = false; refresh(); });
+    });
+
+    $('[data-zy-again]').addEventListener('click', function () {
+      resultUrl = null; person = null; file.value = '';
+      preview.hidden = true; preview.removeAttribute('src'); dropText.hidden = false;
+      dropText.innerHTML = '<strong>Upload your photo</strong><br><small>JPG or PNG \u00b7 tap to choose or take a photo</small>';
+      setErr(''); refresh(); show('upload');
+    });
+
+    if (atc) atc.addEventListener('click', function () {
+      var id = currentVariantId();
+      atc.disabled = true;
+      var root_ = (window.Shopify && window.Shopify.routes && window.Shopify.routes.root) || '/';
+      fetch(root_ + 'cart/add.js', {
+        method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+        body: JSON.stringify({ items: [{ id: id, quantity: 1 }] })
+      }).then(function (r) { return r.json().then(function (j) { if (!r.ok) throw j; return j; }); })
+        .then(function () {
+          atcMsg.innerHTML = 'Added to cart \u2713 &nbsp;<a href="' + root_ + 'cart">View cart</a>';
+          atcMsg.hidden = false;
+          document.dispatchEvent(new CustomEvent('zy:vto:added', { detail: { variantId: id } }));
+        })
+        .catch(function (j) {
+          atcMsg.textContent = (j && j.description) || 'Could not add to cart. Please use the main Add to cart button.';
+          atcMsg.hidden = false;
+        })
+        .then(function () { atc.disabled = false; });
+    });
+  }
+
+  window.__zyVTO = {
+    detect: detect,
+    extractImage: extractImage,
+    scan: function () {
+      document.querySelectorAll('body > [data-zy-modal][data-zy-owner]').forEach(function (m) {
+        if (!document.getElementById(m.getAttribute('data-zy-owner'))) m.remove();
+      });
+      document.querySelectorAll('[data-zy-vto]').forEach(init);
+    }
+  };
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', window.__zyVTO.scan);
+  else window.__zyVTO.scan();
+  document.addEventListener('shopify:section:load', window.__zyVTO.scan);
+})();
+</script>
+{%- endunless -%}

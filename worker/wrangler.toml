@@ -1,0 +1,33 @@
+name = "zynova-virtual-tryon"
+main = "src/index.js"
+compatibility_date = "2026-11-01"
+
+[vars]
+GEMINI_MODEL = "gemini-3.1-flash-image"
+
+# Har naya client yahan add karein. Key = clientId (Shopify section settings mein bhi yehi likhna hai).
+# origins = store ke saare domains (custom domain, www, aur .myshopify.com) — bina "/" ke end mein.
+# dailyLimit = roz ki max try-ons (0 = koi limit nahi; USAGE KV binding chahiye).
+# promptNote (optional) = is client ke liye extra AI hidayat.
+# model (optional) = is client ke liye alag Gemini model.
+CLIENTS = '''
+{
+  "miacara": {
+    "origins": ["https://miacara.pk", "https://www.miacara.pk", "https://miacara.myshopify.com"],
+    "dailyLimit": 300,
+    "promptNote": "Products are Pakistani women's eastern wear (kurta, shalwar/trousers, dupatta)."
+  }
+}
+'''
+
+# Per-IP limit: 1 IP se 60 seconds mein max 4 try-ons
+[[ratelimits]]
+name = "RATE_LIMITER"
+namespace_id = "1001"
+simple = { limit = 4, period = 60 }
+
+# Daily cap ke liye KV. Pehle chalayein:  npx wrangler kv namespace create USAGE
+# phir neeche wali id replace karein aur comment hata dein.
+# [[kv_namespaces]]
+# binding = "USAGE"
+# id = "PASTE_KV_ID_HERE"
