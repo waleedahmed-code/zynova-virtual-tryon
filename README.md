@@ -4,17 +4,29 @@ Customer product page pe apni photo upload karta hai, aur AI wahi outfit ya jewe
 Aik hi Worker **saare clients** ke liye chalta hai. Har naye client ke liye bas uska config add karna hota hai.
 
 ```
-Shopify product page ──► Cloudflare Worker (zynova-virtual-tryon) ──► Gemini image model
-   (snippet + section)        API key yahan safe; client/origin check;        (gemini-3.1-flash-image)
-                              rate limit; prompt yahin banta hai
+Shopify product page ──► Cloudflare Worker (zynova-virtual-tryon) ──► Workers AI: FLUX.2 [klein] 4B  (default, FREE)
+   (snippet + section)        client/origin check; rate limit;        └─► ya Gemini (optional, paid, behtar quality)
+                              prompt yahin banta hai
 ```
+
+## AI provider
+| | Workers AI (default) | Gemini (optional) |
+|---|---|---|
+| Kharcha | Free: 10,000 neurons/roz ≈ 80 try-ons/roz | Har image ka paisa |
+| Key | Koi key nahi | `GEMINI_API_KEY` secret |
+| Quality | Theek, input images 504px tak | Behtar detail (1024px) |
+| Badalna | `PROVIDER = "workers-ai"` | `PROVIDER = "gemini"` ya client mein `"provider": "gemini"` |
+
+Free limit khatam ho jaye to customer ko "today's limit" message milta hai; agle din (00:00 UTC) reset.
+`<worker-url>/health` batata hai kaun sa provider chal raha hai aur binding/key mili ya nahi.
 
 ## Files
 | File | Kaam |
 |---|---|
 | `worker/src/index.js` | Cloudflare Worker (multi-client) |
 | `worker/wrangler.toml` | Worker config + **CLIENTS list** |
-| `worker/test/worker.test.mjs` | 22 unit tests (`npm test`) |
+| `worker/test/worker.test.mjs` | 36 unit tests (`npm test`) |
+| `shopify/mia-cara/snippets/mia-virtual-tryon.liquid` | Mia Cara theme ka block snippet (main-product → virtual_try_on) |
 | `shopify/snippets/zy-virtual-tryon.liquid` | Asal UI: button, modal, upload, result, add to cart |
 | `shopify/sections/zy-virtual-tryon.liquid` | Section wrapper, taa ke Customizer se add ho sake |
 
@@ -22,15 +34,14 @@ Shopify product page ──► Cloudflare Worker (zynova-virtual-tryon) ──�
 
 ## 1) Worker deploy (sirf aik baar)
 
-1. Gemini API key banayein: https://aistudio.google.com/apikey (billing on honi chahiye, image models free tier pe limited hote hain).
-2. Terminal mein:
+1. Terminal mein (Workers AI ke liye koi key nahi chahiye; `[ai]` binding wrangler.toml mein hai):
    ```bash
    cd worker
    npm install
    npx wrangler login
-   npx wrangler secret put GEMINI_API_KEY     # key paste karein
    npx wrangler deploy
    ```
+2. (Sirf agar Gemini use karna ho) `npx wrangler secret put GEMINI_API_KEY` aur `PROVIDER = "gemini"`.
 3. Deploy ke baad URL milega, jaise `https://zynova-virtual-tryon.<account>.workers.dev`. Check karein: `<URL>/health` pe `{"ok":true,...}` aana chahiye.
 4. (Optional) Roz ki limit per client:
    ```bash
@@ -77,7 +88,7 @@ Shopify product page ──► Cloudflare Worker (zynova-virtual-tryon) ──�
 Bina tag ke, system product ke title, type aur tags se khud detect karta hai (jhumka → earrings, kangan → bangles, waghera).
 
 ## Kharcha (andaaza)
-Har try-on Gemini ki aik image generation hai. Gemini ki current pricing yahan dekh lein: https://ai.google.dev/gemini-api/docs/pricing
+Workers AI pe roz 10,000 neurons free hain (≈80 try-ons). Zyada chahiye to Workers Paid plan ($5/mahina) pe $0.011 per 1,000 neurons. Gemini use karein to us ki pricing: https://ai.google.dev/gemini-api/docs/pricing
 Kharcha control karne ke teen tareeqe hain: per-IP limit (default 1 minute mein 4 try-ons), per-client `dailyLimit`, aur kisi client ko `"enabled": false` kar ke band karna.
 Agar kisi client ka bajat kam ho to us ke config mein `"model": "gemini-3.1-flash-lite-image"` likh dein. Ye sasta hai, lekin quality thodi kam hai.
 
@@ -86,6 +97,6 @@ Customer ki photo browser mein 1024px tak chhoti ki jati hai, seedhi Gemini ko j
 
 ## Test karna
 ```bash
-cd worker && npm test        # 22 unit tests
+cd worker && npm test        # 36 unit tests
 npx wrangler tail            # live logs (errors yahan dikhenge)
 ```
