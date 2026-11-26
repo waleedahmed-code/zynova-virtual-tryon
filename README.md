@@ -92,11 +92,16 @@ Workers AI pe roz 10,000 neurons free hain (≈80 try-ons). Zyada chahiye to Wor
 Kharcha control karne ke teen tareeqe hain: per-IP limit (default 1 minute mein 4 try-ons), per-client `dailyLimit`, aur kisi client ko `"enabled": false` kar ke band karna.
 Agar kisi client ka bajat kam ho to us ke config mein `"model": "gemini-3.1-flash-lite-image"` likh dein. Ye sasta hai, lekin quality thodi kam hai.
 
-## Product references (sab images, strict rules)
-- **3 product views** AI ko jate hain: select kiya hua variant pehle, phir baaki angles (back/detail). Jis image ke alt ya file name mein `size`, `chart`, `measure` ya `guide` ho, woh skip hoti hai, is liye size chart ki image ka alt "Size Chart" rakhein.
-- **Model mitana:** customer ke browser mein Google MediaPipe (free) har product photo se model ka **chehra, baal aur skin (haath/baazu)** safed kar deta hai. Kameez, trouser aur dupatta waise hi rehte hain. Bag reference mein reh sakta hai, lekin prompt mein use copy karna mana hai. Model (~16 MB) pehli baar download hota hai, phir browser cache mein rehta hai. Load na ho to `productCropTop` wala fallback chalta hai.
-- **Dupatta:** title, tags ya description mein "3 Piece" ya "dupatta" ho to AI ko dupatta lazmi dikhane ki hidayat jati hai. "2 Piece", "1 Piece" ya "without dupatta" ho to dupatta banana mana hai.
-- **Details:** description se length, sleeves, gale, fabric aur embroidery wali lines (max 300 characters) AI ko jati hain.
+## Product references (saari images analyze hoti hain)
+- **Saari product images** (max 8) customer ke browser mein Google MediaPipe (free) se analyze hoti hain. Har photo mein kapra kitna bara aur saaf hai, yeh napa jata hai, aur **best 3 views** AI ko jate hain. Doosre rang ke variants ki photos aur size chart (alt/file name mein `size`, `chart`, `measure`, `guide`) skip hote hain.
+- **Product model hataya jata hai:** baal, chehra, haath/baazu aur chhoti accessories (bag, clutch) **aas paas ke rang se bhar** ke mitaye jate hain:
+  - kapre ke andar (jaise kandhe pe baal, saamne bag) kapre ke rang se;
+  - kapre ke bahar (jaise latakte haath, sar) background ke rang se.
+  Is se kapre ki shape wahi rehti hai, aur safed dhabbe ya nakli aasteen nahi bante. Bari accessory (jaise dupatta) bachi rehti hai.
+- Har view kapre ke gird badi resolution (1600px) se crop hota hai, phir 504px pe AI ko jata hai.
+- **Dupatta:** "3 Piece" ya "dupatta" ho to dupatta lazmi; "2 Piece", "1 Piece" ya "without dupatta" ho to mana.
+- **Details:** description se length, sleeves, gala aur fabric wali lines prompt mein jati hain.
+- Model (~16 MB) pehli baar download hota hai, phir browser cache mein rehta hai. Load na ho to `productCropTop` wala fallback chalta hai.
 
 ## Privacy
 Customer ki photo browser mein 1024px tak chhoti ki jati hai, seedhi Gemini ko jati hai, aur **kahin save nahi hoti**: na Worker mein, na Shopify mein. Generate karne se pehle customer se consent checkbox lazmi tick karwaya jata hai.
