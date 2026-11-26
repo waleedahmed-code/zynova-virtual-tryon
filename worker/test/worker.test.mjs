@@ -221,7 +221,7 @@ test('default provider is workers-ai, works without GEMINI key', async () => {
   assert.equal(calls[0].model, '@cf/black-forest-labs/flux-2-klein-4b');
   const f = calls[0].form;
   assert.match(f.get('prompt'), /^Edit image 0\. Change only the clothes/);
-  assert.match(f.get('prompt'), /do not copy the model, face, hair, pose, hands, handbag, bag/);
+  assert.match(f.get('prompt'), /Do not copy any person, face, hair, hands, pose, handbag, bag/);
   assert.match(f.get('prompt'), /exactly two arms and two hands/);
   const p0 = f.get('input_image_0'), p1 = f.get('input_image_1');
   assert.equal(p0.size, 600); assert.equal(p1.size, 600);
@@ -319,8 +319,52 @@ test('flux prompt sanitises title', () => {
 test('productMode garment adds cut-out line to FLUX prompt', async () => {
   const { env, calls } = aiEnv();
   await worker.fetch(req({ ...okBody, productMode: 'garment' }), env);
-  assert.match(calls[0].form.get('prompt'), /Image 1 shows only the garment, cut out on a white background/);
+  assert.match(calls[0].form.get('prompt'), /face, hair and skin were removed \(white areas\)/);
   const { env: env2, calls: calls2 } = aiEnv();
   await worker.fetch(req({ ...okBody, productMode: 'evil"injection' }), env2);
-  assert.ok(!/cut out/.test(calls2[0].form.get('prompt')));
+  assert.ok(!/were removed/.test(calls2[0].form.get('prompt')));
+});
+
+test('multiple product views -> input_image_1..3, extra views dropped', async () => {
+  const { env, calls } = aiEnv();
+  const views = [IMG, IMG, IMG, IMG, IMG];
+  const r = await worker.fetch(req({ ...okBody, product: undefined, products: views }), env);
+  assert.equal(r.status, 200);
+  const f = calls[0].form;
+  assert.ok(f.get('input_image_1') && f.get('input_image_2') && f.get('input_image_3'));
+  assert.equal(f.get('input_image_4'), null);
+  assert.match(f.get('prompt'), /images 1 to 3 \(different views of the same product\)/);
+});
+
+test('one bad product view -> 400, AI not called', async () => {
+  const { env, calls } = aiEnv();
+  const r = await worker.fetch(req({ ...okBody, products: [IMG, { mime: 'image/gif', data: B64 }] }), env);
+  assert.equal(r.status, 400);
+  assert.equal(calls.length, 0);
+});
+
+test('dupatta yes/no + details reach the prompt (sanitised)', async () => {
+  let { env, calls } = aiEnv();
+  await worker.fetch(req({ ...okBody, dupatta: 'yes', details: 'Shirt length 44"\n<b>Lawn</b>' }), env);
+  let pr = calls[0].form.get('prompt');
+  assert.match(pr, /The outfit HAS a dupatta/);
+  assert.match(pr, /Product details: Shirt length 44 b Lawn \/b/);
+  assert.ok(!/[\n<>"]/.test(pr.split('Product details:')[1].split('.')[0]));
+  ({ env, calls } = aiEnv());
+  await worker.fetch(req({ ...okBody, dupatta: 'no' }), env);
+  assert.match(calls[0].form.get('prompt'), /has NO dupatta: do not add any dupatta/);
+  ({ env, calls } = aiEnv());
+  await worker.fetch(req({ ...okBody, dupatta: 'maybe' }), env);
+  assert.ok(!/dupatta: the person must|NO dupatta/.test(calls[0].form.get('prompt')));
+});
+
+test('gemini receives all product views in order', async () => {
+  const r = await worker.fetch(req({ ...okBody, products: [IMG, IMG], dupatta: 'yes' }), makeEnv());
+  assert.equal(r.status, 200);
+  const sent = JSON.parse(calls[0].init.body);
+  const parts = sent.contents[0].parts;
+  assert.equal(parts.filter((p) => p.inline_data).length, 3);
+  assert.ok(parts.some((p) => p.text === 'IMAGE 3 (product view 2):'));
+  assert.match(parts[0].text, /IMAGES 2 to 3/);
+  assert.match(parts[0].text, /HAS a dupatta/);
 });
