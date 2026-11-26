@@ -92,11 +92,11 @@ Workers AI pe roz 10,000 neurons free hain (≈80 try-ons). Zyada chahiye to Wor
 Kharcha control karne ke teen tareeqe hain: per-IP limit (default 1 minute mein 4 try-ons), per-client `dailyLimit`, aur kisi client ko `"enabled": false` kar ke band karna.
 Agar kisi client ka bajat kam ho to us ke config mein `"model": "gemini-3.1-flash-lite-image"` likh dein. Ye sasta hai, lekin quality thodi kam hai.
 
-## Product photo se sirf kapre (garment cut-out)
-Product photo mein model ho to AI us ka chehra/haath/bag bhi copy kar leta tha. Ab customer ke browser mein hi
-Google MediaPipe (free) product photo ko segment karta hai aur **sirf kapre** (jewellery ke liye sirf jewellery)
-safed background pe AI ko bhejta hai. Model (~16 MB) pehli baar popup kholne pe download hota hai, phir browser cache.
-Load na ho sake to khud purane tareeqe pe chala jata hai (`productCropTop` = upar se % kaatna).
+## Product references (sab images, strict rules)
+- **3 product views** AI ko jate hain: select kiya hua variant pehle, phir baaki angles (back/detail). Jis image ke alt ya file name mein `size`, `chart`, `measure` ya `guide` ho, woh skip hoti hai, is liye size chart ki image ka alt "Size Chart" rakhein.
+- **Model mitana:** customer ke browser mein Google MediaPipe (free) har product photo se model ka **chehra, baal aur skin (haath/baazu)** safed kar deta hai. Kameez, trouser aur dupatta waise hi rehte hain. Bag reference mein reh sakta hai, lekin prompt mein use copy karna mana hai. Model (~16 MB) pehli baar download hota hai, phir browser cache mein rehta hai. Load na ho to `productCropTop` wala fallback chalta hai.
+- **Dupatta:** title, tags ya description mein "3 Piece" ya "dupatta" ho to AI ko dupatta lazmi dikhane ki hidayat jati hai. "2 Piece", "1 Piece" ya "without dupatta" ho to dupatta banana mana hai.
+- **Details:** description se length, sleeves, gale, fabric aur embroidery wali lines (max 300 characters) AI ko jati hain.
 
 ## Privacy
 Customer ki photo browser mein 1024px tak chhoti ki jati hai, seedhi Gemini ko jati hai, aur **kahin save nahi hoti**: na Worker mein, na Shopify mein. Generate karne se pehle customer se consent checkbox lazmi tick karwaya jata hai.
