@@ -319,10 +319,10 @@ test('flux prompt sanitises title', () => {
 test('productMode garment adds cut-out line to FLUX prompt', async () => {
   const { env, calls } = aiEnv();
   await worker.fetch(req({ ...okBody, productMode: 'garment' }), env);
-  assert.match(calls[0].form.get('prompt'), /face, hair and skin were removed \(white areas\)/);
+  assert.match(calls[0].form.get('prompt'), /face, hair, hands and bag were digitally removed/);
   const { env: env2, calls: calls2 } = aiEnv();
   await worker.fetch(req({ ...okBody, productMode: 'evil"injection' }), env2);
-  assert.ok(!/were removed/.test(calls2[0].form.get('prompt')));
+  assert.ok(!/digitally removed/.test(calls2[0].form.get('prompt')));
 });
 
 test('multiple product views -> input_image_1..3, extra views dropped', async () => {
