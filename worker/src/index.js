@@ -137,27 +137,35 @@ function sniffMime(b64) {
 
 /* ----------------------------------------------------------------- prompt */
 
-/** Prompt for FLUX.2 (images are referred to by index: image 0 = customer, image 1 = product) */
+/**
+ * Prompt for FLUX.2 [klein] (images referred to by index: image 0 = customer, image 1 = product).
+ * Written as an EDIT instruction (not "a photo of...") so the model keeps image 0 and only swaps the
+ * garment, and explicitly forbids copying the product model's face, pose, hands, bag or jewellery.
+ */
 export function buildFluxPrompt({ category, subtype, productTitle, clientCfg }) {
   const t = cleanText(productTitle, 120);
   const title = t ? ` (${t})` : '';
-  const keep =
-    'Keep the person from image 0 exactly the same: same face, identity, skin tone, hair, body shape, pose, ' +
-    'expression, camera angle, lighting and background. Do not use the face or body of any model in image 1.';
   const extra = clientCfg && clientCfg.promptNote ? ' ' + cleanText(clientCfg.promptNote, 300) : '';
+  const keep =
+    'Everything else in image 0 must stay exactly the same: the same face, eyes, nose, lips, expression, skin tone, ' +
+    'hair, body shape, pose, arms, hands, camera angle, framing, background and lighting. ' +
+    'The person keeps exactly two arms and two hands in their original position.';
   if (category === 'jewelry') {
     const what = JEWELRY_SUBTYPES[subtype] || JEWELRY_SUBTYPES.jewelry;
     return (
-      `Photo of the person from image 0 wearing ${what} from image 1${title}. ` +
-      'Copy the jewellery exactly from image 1: same design, metal colour, stones and details, realistic scale. ' +
-      'Keep the person\'s clothes unchanged. ' + keep + ' Photorealistic, natural shadows, single photo, no text.' + extra
+      `Edit image 0. Add only ${what} shown in image 1${title} to the person in image 0. ` +
+      'Copy the jewellery exactly: same design, metal colour, stones and details, at a realistic size. ' +
+      'Do not change the clothes. Do not copy any person, face, hair, hands or other items from image 1. ' +
+      keep + ' Photorealistic, single photo, no text.' + extra
     );
   }
   return (
-    `Photo of the person from image 0 wearing the exact outfit from image 1${title}. ` +
-    'Copy the garment faithfully from image 1: same fabric, colours, print, embroidery, neckline, sleeves, length and cut; ' +
-    'include the dupatta, shawl or trousers if image 1 shows them. Keep it as modest as in image 1. ' +
-    keep + ' Photorealistic, natural fabric folds and shadows, single photo, no text.' + extra
+    `Edit image 0. Change only the clothes of the person in image 0: dress them in the outfit shown in image 1${title}. ` +
+    'Copy the garment faithfully: same fabric, colours, print, embroidery, neckline, buttons, sleeves and length; ' +
+    'add the matching dupatta and trousers if image 1 shows them. Keep it as modest as in image 1. ' +
+    'Use image 1 only as a reference for the garment: do not copy the model, face, hair, pose, hands, ' +
+    'handbag, bag, purse, clutch, jewellery, earrings, shoes or any accessories from image 1. ' +
+    keep + ' Photorealistic, natural fabric folds, single photo, no text.' + extra
   );
 }
 
@@ -382,7 +390,10 @@ export default {
 
     if (url.pathname === '/config') {
       const provider = providerFor(env, clientCfg);
-      return json(200, { provider, maxInput: provider === 'gemini' ? GEMINI_MAX_INPUT : CF_MAX_INPUT }, origin);
+      // productCropTop: fraction of the product photo's top to cut off before sending (removes the
+      // product model's head so the AI can't copy her face). Only applied to clothing by the storefront.
+      const crop = Math.min(0.4, Math.max(0, Number(clientCfg.productCropTop) || 0));
+      return json(200, { provider, maxInput: provider === 'gemini' ? GEMINI_MAX_INPUT : CF_MAX_INPUT, productCropTop: crop }, origin);
     }
 
     if (request.method !== 'POST') return json(405, { error: 'Method not allowed' }, origin);
