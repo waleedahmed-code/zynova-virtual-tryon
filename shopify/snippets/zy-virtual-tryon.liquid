@@ -52,6 +52,7 @@
       "jewelryKeywords": {{ zy_kw | json }},
       "title": {{ product.title | json }},
       "type": {{ product.type | json }},
+      "description": {{ product.description | strip_html | strip_newlines | truncate: 800 | json }},
       "tags": {{ product.tags | json }},
       "selectedVariant": {{ product.selected_or_first_available_variant.id | json }},
       "images": [
@@ -61,7 +62,7 @@
       ],
       "variants": [
         {%- for v in product.variants -%}
-          {"id": {{ v.id | json }}, "imageId": {{ v.featured_image.id | json }}, "available": {{ v.available | json }}}{% unless forloop.last %},{% endunless %}
+          {"id": {{ v.id | json }}, "imageId": {% if v.featured_image %}{{ v.featured_image.id | json }}{% else %}null{% endif %}, "available": {{ v.available | json }}}{% unless forloop.last %},{% endunless %}
         {%- endfor -%}
       ]
     }
@@ -241,22 +242,194 @@
       img.src = url;
     });
   }
-  /** Resize to max side, return { mime, data(base64), dataUrl } */
-  function toJpeg(blob, max) {
+  var configCache = {};
+  /** Ask the Worker which provider is active and the max input image size (Workers AI 504, Gemini 1024). */
+  function getConfig(base) {
+    if (!configCache[base]) {
+      configCache[base] = fetch(base + '/config', { credentials: 'omit' })
+        .then(function (r) { return r.ok ? r.json() : {}; })
+        .catch(function () { return {}; })
+        .then(function (j) { return { maxInput: Number(j.maxInput) || 504, provider: j.provider || 'workers-ai', productCropTop: Math.min(0.4, Math.max(0, Number(j.productCropTop) || 0)) }; });
+    }
+    return configCache[base];
+  }
+
+  /** Resize to max side, return { mime, data(base64), dataUrl, w, h } */
+  function toJpeg(blob, max, cropTop) {
     return loadBitmap(blob).then(function (bmp) {
-      var w = bmp.width, h = bmp.height;
-      if (!w || !h) throw new Error('decode');
+      var sw = bmp.width, sh = bmp.height;
+      if (!sw || !sh) throw new Error('decode');
+      var sy = Math.round(sh * (cropTop || 0));   // cut this many px off the top (product model's head)
+      var w = sw, h = sh - sy;
       var scale = Math.min(1, max / Math.max(w, h));
       var c = document.createElement('canvas');
       c.width = Math.round(w * scale); c.height = Math.round(h * scale);
       var ctx = c.getContext('2d');
       ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, c.width, c.height);
-      ctx.drawImage(bmp, 0, 0, c.width, c.height);
+      ctx.drawImage(bmp, 0, sy, sw, h, 0, 0, c.width, c.height);
       if (bmp.close) bmp.close();
       var dataUrl = c.toDataURL('image/jpeg', 0.88);
-      return { mime: 'image/jpeg', data: dataUrl.split(',')[1], dataUrl: dataUrl };
+      return { mime: 'image/jpeg', data: dataUrl.split(',')[1], dataUrl: dataUrl, w: c.width, h: c.height };
     });
   }
+
+      /* ---------- Product reference prep (free, runs in the customer's browser) ----------
+         MediaPipe "selfie multiclass" segmentation splits each product photo into
+         0 background, 1 hair, 2 body-skin, 3 face-skin, 4 clothes, 5 accessories.
+         We ERASE only the product model's hair, face and skin (hands/arms) to white and keep
+         everything else, so the whole outfit survives (kameez, trousers, sheer dupatta) while the
+         AI never sees the model's face or hands. Falls back to a top-crop if the model can't load.
+         CPU delegate: the GPU delegate scrambles classes on iOS Safari. */
+      var MP_VER = '1.2.3';
+      var MP_BASE = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@' + MP_VER;
+      var MP_MODEL = 'https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_multiclass_256x256/float32/latest/selfie_multiclass_256x256.tflite';
+      var MAX_VIEWS = 3;
+      var segPromise = null;
+
+      function getSegmenter() {
+        if (window.__zyVtoSegmenter) return Promise.resolve(window.__zyVtoSegmenter); // test hook
+        if (!segPromise) {
+          var base = window.__zyVtoMpBase || MP_BASE, model = window.__zyVtoMpModel || MP_MODEL;
+          segPromise = import(base + '/vision_bundle.mjs').then(function (mp) {
+            return mp.FilesetResolver.forVisionTasks(base + '/wasm').then(function (files) {
+              return mp.ImageSegmenter.createFromOptions(files, {
+                baseOptions: { modelAssetPath: model, delegate: 'CPU' },
+                runningMode: 'IMAGE', outputCategoryMask: true, outputConfidenceMasks: false
+              });
+            });
+          });
+        }
+        return segPromise;
+      }
+
+      function withTimeout(p, ms) {
+        return new Promise(function (res, rej) {
+          var t = setTimeout(function () { rej(new Error('timeout')); }, ms);
+          p.then(function (v) { clearTimeout(t); res(v); }, function (e) { clearTimeout(t); rej(e); });
+        });
+      }
+
+      function canvasToJpeg(src, max) {
+        var s = Math.min(1, max / Math.max(src.width, src.height));
+        var c = document.createElement('canvas');
+        c.width = Math.max(1, Math.round(src.width * s)); c.height = Math.max(1, Math.round(src.height * s));
+        var x = c.getContext('2d');
+        x.fillStyle = '#fff'; x.fillRect(0, 0, c.width, c.height);
+        x.drawImage(src, 0, 0, c.width, c.height);
+        var dataUrl = c.toDataURL('image/jpeg', 0.9);
+        return { mime: 'image/jpeg', data: dataUrl.split(',')[1], dataUrl: dataUrl, w: c.width, h: c.height };
+      }
+
+      /** Separable square dilation of a 0/1 mask. */
+      function dilate(m, w, h, r) {
+        if (r < 1) return m;
+        var t = new Uint8Array(w * h), o = new Uint8Array(w * h), x, y, k;
+        for (y = 0; y < h; y++) for (x = 0; x < w; x++) {
+          for (k = -r; k <= r; k++) { var xx = x + k; if (xx >= 0 && xx < w && m[y * w + xx]) { t[y * w + x] = 1; break; } }
+        }
+        for (y = 0; y < h; y++) for (x = 0; x < w; x++) {
+          for (k = -r; k <= r; k++) { var yy = y + k; if (yy >= 0 && yy < h && t[yy * w + x]) { o[y * w + x] = 1; break; } }
+        }
+        return o;
+      }
+
+      /** Returns { mime, data, w, h, mode } - mode: "garment" (model erased), "original" (no person) or "crop" (fallback). */
+      function prepareProduct(blob, max, cropTop, category) {
+        var isJ = category === 'jewelry';
+        var fallback = function () {
+          return toJpeg(blob, max, isJ ? 0 : cropTop).then(function (r) { r.mode = 'crop'; return r; });
+        };
+        return withTimeout(getSegmenter(), 25000).then(function (seg) {
+          return loadBitmap(blob).then(function (bmp) {
+            var s = Math.min(1, 512 / Math.max(bmp.width, bmp.height));
+            var c = document.createElement('canvas');
+            c.width = Math.round(bmp.width * s); c.height = Math.round(bmp.height * s);
+            var cx = c.getContext('2d');
+            cx.drawImage(bmp, 0, 0, c.width, c.height);
+            if (bmp.close) bmp.close();
+
+            var res = seg.segment(c);
+            var m = res && res.categoryMask;
+            if (!m) throw new Error('nomask');
+            var mw = m.width, mh = m.height, cls = new Uint8Array(m.getAsUint8Array());
+            if (res.close) res.close();
+
+            var n = mw * mh, person = 0, box = 0, x0 = mw, y0 = mh, x1 = -1, y1 = -1, i, x, y, v;
+            var er = new Uint8Array(n), keep = new Uint8Array(n);
+            for (i = 0; i < n; i++) {
+              v = cls[i];
+              if (v === 1 || v === 2 || v === 3) { person++; er[i] = 1; }
+              var inBox = isJ ? v === 5 : (v === 4 || v === 5);
+              if (inBox) {
+                keep[i] = 1; box++; x = i % mw; y = (i / mw) | 0;
+                if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y;
+              }
+            }
+            // No person in the photo (flat-lay / mannequin / packshot): send it as it is.
+            if (person / n < 0.003) return toJpeg(blob, max, 0).then(function (r) { r.mode = 'original'; return r; });
+            // Person found but no garment/jewellery detected: safer fallback.
+            if (box / n < (isJ ? 0.0005 : 0.03)) return fallback();
+
+            // Erase mask = model's hair/face/skin, grown a little so no edges remain,
+            // but never eating into garment/jewellery pixels.
+            er = dilate(er, mw, mh, isJ ? 0 : Math.max(1, Math.round(Math.max(mw, mh) * 0.012)));
+            var md = document.createElement('canvas'); md.width = mw; md.height = mh;
+            var mctx = md.getContext('2d'), id = mctx.createImageData(mw, mh), a = id.data;
+            for (i = 0; i < n; i++) a[i * 4 + 3] = er[i] && !keep[i] ? 255 : 0;
+            mctx.putImageData(id, 0, 0);
+
+            var wl = document.createElement('canvas'); wl.width = c.width; wl.height = c.height;
+            var wx = wl.getContext('2d');
+            wx.fillStyle = '#fff'; wx.fillRect(0, 0, wl.width, wl.height);
+            wx.globalCompositeOperation = 'destination-in';
+            wx.imageSmoothingEnabled = true;
+            wx.drawImage(md, 0, 0, wl.width, wl.height);
+            cx.drawImage(wl, 0, 0);               // white over the model's face/hair/skin
+
+            // Crop to the outfit (or jewellery) + 4% padding.
+            var sx = c.width / mw, sy = c.height / mh, pad = Math.round(Math.max(c.width, c.height) * 0.04);
+            var bx = Math.max(0, Math.floor(x0 * sx) - pad), by = Math.max(0, Math.floor(y0 * sy) - pad);
+            var bw = Math.min(c.width, Math.ceil((x1 + 1) * sx) + pad) - bx, bh = Math.min(c.height, Math.ceil((y1 + 1) * sy) + pad) - by;
+            var o = document.createElement('canvas'); o.width = bw; o.height = bh;
+            o.getContext('2d').drawImage(c, bx, by, bw, bh, 0, 0, bw, bh);
+            var r = canvasToJpeg(o, max); r.mode = 'garment';
+            return r;
+          });
+        }).catch(function (e) {
+          if (window.console) console.warn('[try-on] garment cut-out unavailable, using fallback:', e && e.message);
+          return fallback();
+        });
+      }
+
+      /** Up to MAX_VIEWS product image URLs: the chosen/variant image first, then other photos; skips size charts. */
+      function pickViews(images, firstUrl) {
+        var out = [], seen = {};
+        var norm = function (u) { return String(u || '').split('?')[0]; };
+        var add = function (u) { var k = norm(u); if (u && !seen[k] && out.length < MAX_VIEWS) { seen[k] = 1; out.push(u); } };
+        add(firstUrl);
+        (images || []).forEach(function (im) {
+          if (/size|chart|measure|guide/i.test((im.alt || '') + ' ' + (im.src || ''))) return;
+          add(im.src);
+        });
+        return out;
+      }
+
+      /** "yes" / "no" / "" from title, type, tags and description. */
+      function detectDupatta(cfg) {
+        var hay = [cfg.title, cfg.type, (cfg.tags || []).join(' '), cfg.description].join(' ').toLowerCase();
+        if (/(without|no)\s+dupatta|\b(1|2|one|two)[\s-]*(pc|pcs|piece)\b|shirt only|kurti only|kurta only/.test(hay)) return 'no';
+        if (/dupatta|\b(3|three)[\s-]*(pc|pcs|piece)\b/.test(hay)) return 'yes';
+        return '';
+      }
+
+      /** Garment-relevant sentences from the description (length, sleeves, neckline, fabric...), max 300 chars. */
+      function productDetails(cfg) {
+        var d = String(cfg.description || '').replace(/\s+/g, ' ').trim();
+        if (!d) return '';
+        var parts = d.split(/[.!?\u2022|;]+\s*/);  // no lookbehind: keeps older iOS Safari working
+        var rel = parts.filter(function (p) { return /length|sleeve|neck|collar|fabric|lawn|chiffon|silk|cotton|khaddar|linen|dupatta|trouser|shalwar|pant|embroider|shirt|kameez|kurta|cut|fit|hem|button/i.test(p); });
+        return (rel.length ? rel.join('. ') : d).slice(0, 300);
+      }
 
   function extractImage(j) {
     var cands = (j && j.candidates) || [];
@@ -299,6 +472,8 @@
         dl = $('[data-zy-download]'), atc = $('[data-zy-atc]'), atcMsg = $('[data-zy-atc-msg]'),
         loadingText = $('[data-zy-loading-text]');
     var det = detect(cfg);
+    var base = String(cfg.workerUrl).trim().replace(/\/+$/, '').replace(/\/(api\/try-on|tryon|config)$/i, '');
+    var personFile = null;
     var person = null, chosenImg = null, busy = false, msgTimer = null, lastFocus = null, resultUrl = null;
 
     $('[data-zy-tip]').textContent = TIPS[det.category];
@@ -343,6 +518,8 @@
 
     function open() {
       lastFocus = document.activeElement;
+      getConfig(base); // warm up
+      getSegmenter().catch(function () {});  // start loading the cut-out model early
       chosenImg = null; renderThumbs();
       modal.hidden = false; document.documentElement.classList.add('zy-vto-lock');
       if (!busy) show(resultUrl ? 'result' : 'upload');
@@ -363,10 +540,10 @@
       setErr('');
       if (!f) return;
       if (f.size > 25 * 1024 * 1024) { setErr('That photo is too large. Please use one under 25 MB.'); return; }
-      person = null; refresh();
+      person = null; personFile = null; refresh();
       dropText.innerHTML = '<strong>Reading photo\u2026</strong>';
       toJpeg(f, 1024).then(function (img) {
-        person = img;
+        person = img; personFile = f;
         preview.src = img.dataUrl; preview.hidden = false; dropText.hidden = true;
         refresh();
       }).catch(function () {
@@ -389,20 +566,42 @@
       var ctrl = window.AbortController ? new AbortController() : null;
       var to = setTimeout(function () { if (ctrl) ctrl.abort(); }, 120000);
 
-      fetch(im.src, { credentials: 'omit' })
-        .then(function (r) { if (!r.ok) throw new Error('product'); return r.blob(); })
-        .then(function (b) { return toJpeg(b, 1024); })
-        .catch(function (e) { e.zy = 'Could not load the product image. Please refresh and try again.'; throw e; })
-        .then(function (prod) {
-          return fetch(cfg.workerUrl.replace(/\/+$/, '') + '/tryon', {
+      var max = 504, crop = 0, personImg = null;
+      getConfig(base)
+        .then(function (c) { max = c.maxInput; crop = det.category === 'clothing' ? c.productCropTop : 0; return toJpeg(personFile, max); })
+        .then(function (p) { personImg = p; })
+        .catch(function (e) { e.zy = e.zy || 'We could not read that photo. Please choose another one.'; throw e; })
+        .then(function () {
+          // Product views: chosen/variant image first + up to 2 more angles. Only the first is mandatory.
+          var urls = pickViews(cfg.images, im.src);
+          var views = [];
+          return urls.reduce(function (chain, u, idx) {
+            return chain.then(function () {
+              return fetch(u, { credentials: 'omit' })
+                .then(function (r) { if (!r.ok) throw new Error('product'); return r.blob(); })
+                .then(function (b) { return prepareProduct(b, max, crop, det.category); })
+                .then(function (v) { views.push(v); })
+                .catch(function (e) { if (idx === 0) throw e; });
+            });
+          }, Promise.resolve())
+            .then(function () { return views; })
+            .catch(function (e) { e.zy = 'Could not load the product image. Please refresh and try again.'; throw e; });
+        })
+        .then(function (views) {
+          if (!views.length) { var ev = new Error('noviews'); ev.zy = 'Could not load the product image. Please refresh and try again.'; throw ev; }
+          return fetch(base + '/tryon', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             signal: ctrl ? ctrl.signal : undefined,
             body: JSON.stringify({
               clientId: cfg.clientId, category: det.category, subtype: det.subtype,
               productTitle: cfg.title,
-              person: { mime: person.mime, data: person.data },
-              product: { mime: prod.mime, data: prod.data }
+              person: { mime: personImg.mime, data: personImg.data, w: personImg.w, h: personImg.h },
+              productMode: views.some(function (v) { return v.mode === 'garment'; }) ? 'garment' : 'photo',
+              products: views.map(function (v) { return { mime: v.mime, data: v.data }; }),
+              product: { mime: views[0].mime, data: views[0].data },
+              dupatta: detectDupatta(cfg),
+              details: productDetails(cfg)
             })
           });
         })
@@ -423,6 +622,7 @@
           show('result');
         })
         .catch(function (e) {
+          if (window.console) console.warn('[try-on] failed:', e);
           var m = e && e.zy ? e.zy : (e && e.name === 'AbortError' ? 'This is taking too long. Please try again.' : 'Connection problem. Please check your internet and try again.');
           show('upload'); setErr(m);
         })
@@ -430,7 +630,7 @@
     });
 
     $('[data-zy-again]').addEventListener('click', function () {
-      resultUrl = null; person = null; file.value = '';
+      resultUrl = null; person = null; personFile = null; file.value = '';
       preview.hidden = true; preview.removeAttribute('src'); dropText.hidden = false;
       dropText.innerHTML = '<strong>Upload your photo</strong><br><small>JPG or PNG \u00b7 tap to choose or take a photo</small>';
       setErr(''); refresh(); show('upload');
