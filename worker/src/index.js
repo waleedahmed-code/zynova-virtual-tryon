@@ -166,7 +166,8 @@ export function buildFluxPrompt({ category, subtype, productTitle, clientCfg, pr
   const extra = clientCfg && clientCfg.promptNote ? ' ' + cleanText(clientCfg.promptNote, 300) : '';
   const refs = viewsText(nProducts, 'image');
   const cutout = productMode === 'garment'
-    ? `In ${refs} the product model's face, hair and skin were removed (white areas); they are only references for the ${category === 'jewelry' ? 'jewellery' : 'garment'}. `
+    ? `In ${refs} the product model's face, hair, hands and bag were digitally removed; use them only as references for the ${category === 'jewelry' ? 'jewellery' : 'garment'}. ` +
+      'Smooth patches in the references are not part of the design. '
     : '';
   const keep =
     'Everything else in image 0 must stay exactly the same: the same face, eyes, nose, lips, expression, skin tone, ' +
@@ -201,7 +202,7 @@ export function buildPrompt({ category, subtype, productTitle, clientCfg, nProdu
     'Result must be one photorealistic photo, natural lighting and shadows, correct scale, ' +
     'no text, no watermark, no collage, no side-by-side.';
   const extra = clientCfg && clientCfg.promptNote ? ' ' + cleanText(clientCfg.promptNote, 300) : '';
-  const cut = productMode === 'garment' ? ` In ${refs} the model's face, hair and skin were removed (white areas).` : '';
+  const cut = productMode === 'garment' ? ` In ${refs} the model's face, hair, hands and bag were digitally removed; smooth patches are not part of the design.` : '';
 
   if (category === 'jewelry') {
     const what = JEWELRY_SUBTYPES[subtype] || JEWELRY_SUBTYPES.jewelry;
