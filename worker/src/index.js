@@ -142,10 +142,16 @@ function sniffMime(b64) {
  * Written as an EDIT instruction (not "a photo of...") so the model keeps image 0 and only swaps the
  * garment, and explicitly forbids copying the product model's face, pose, hands, bag or jewellery.
  */
-export function buildFluxPrompt({ category, subtype, productTitle, clientCfg }) {
+export function buildFluxPrompt({ category, subtype, productTitle, clientCfg, productMode }) {
   const t = cleanText(productTitle, 120);
   const title = t ? ` (${t})` : '';
   const extra = clientCfg && clientCfg.promptNote ? ' ' + cleanText(clientCfg.promptNote, 300) : '';
+  // productMode "garment": the storefront already cut the product out (no model, face, hands or bag left).
+  const cutout = productMode === 'garment'
+    ? (category === 'jewelry'
+        ? 'Image 1 shows only the jewellery, cut out on a white background. '
+        : 'Image 1 shows only the garment, cut out on a white background, with no person in it. ')
+    : '';
   const keep =
     'Everything else in image 0 must stay exactly the same: the same face, eyes, nose, lips, expression, skin tone, ' +
     'hair, body shape, pose, arms, hands, camera angle, framing, background and lighting. ' +
@@ -153,14 +159,14 @@ export function buildFluxPrompt({ category, subtype, productTitle, clientCfg }) 
   if (category === 'jewelry') {
     const what = JEWELRY_SUBTYPES[subtype] || JEWELRY_SUBTYPES.jewelry;
     return (
-      `Edit image 0. Add only ${what} shown in image 1${title} to the person in image 0. ` +
+      `Edit image 0. Add only ${what} shown in image 1${title} to the person in image 0. ` + cutout +
       'Copy the jewellery exactly: same design, metal colour, stones and details, at a realistic size. ' +
       'Do not change the clothes. Do not copy any person, face, hair, hands or other items from image 1. ' +
       keep + ' Photorealistic, single photo, no text.' + extra
     );
   }
   return (
-    `Edit image 0. Change only the clothes of the person in image 0: dress them in the outfit shown in image 1${title}. ` +
+    `Edit image 0. Change only the clothes of the person in image 0: dress them in the outfit shown in image 1${title}. ` + cutout +
     'Copy the garment faithfully: same fabric, colours, print, embroidery, neckline, buttons, sleeves and length; ' +
     'add the matching dupatta and trousers if image 1 shows them. Keep it as modest as in image 1. ' +
     'Use image 1 only as a reference for the garment: do not copy the model, face, hair, pose, hands, ' +
@@ -237,12 +243,13 @@ async function handleTryOn(request, env, origin, clientId, clientCfg) {
 
   const category = body.category === 'jewelry' ? 'jewelry' : 'clothing';
   const subtype = JEWELRY_SUBTYPES[body.subtype] ? body.subtype : 'jewelry';
-  const prompt = buildPrompt({
+  let prompt = buildPrompt({
     category,
     subtype,
     productTitle: cleanText(body.productTitle, 120),
     clientCfg,
   });
+  if (body.productMode === 'garment') prompt += ' IMAGE 2 has already been cut out: it shows only the product on a white background.';
 
   const provider = providerFor(env, clientCfg);
   const countUsage = async () => {
@@ -264,7 +271,8 @@ async function handleTryOn(request, env, origin, clientId, clientCfg) {
 async function runWorkersAI({ env, body, category, subtype, clientCfg, origin, countUsage }) {
   if (!env.AI) return json(500, { error: 'Try-on is not configured (AI binding missing).' }, origin);
   const model = clientCfg.cfModel || env.CF_MODEL || DEFAULT_CF_MODEL;
-  const prompt = buildFluxPrompt({ category, subtype, productTitle: body.productTitle, clientCfg });
+  const productMode = body.productMode === 'garment' ? 'garment' : 'photo';
+  const prompt = buildFluxPrompt({ category, subtype, productTitle: body.productTitle, clientCfg, productMode });
   const dims = outputDims(body.person.w, body.person.h);
 
   const fd = new FormData();
