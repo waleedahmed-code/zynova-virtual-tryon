@@ -30,6 +30,7 @@ const DEFAULT_CF_MODEL = '@cf/black-forest-labs/flux-2-klein-4b';
 const CF_MAX_INPUT = 504; // Workers AI FLUX.2: input images must be smaller than 512x512
 const GEMINI_MAX_INPUT = 1024;
 const OUT_LONG_SIDE = 1024;
+const MAX_PRODUCT_IMAGES = 3; // FLUX.2 on Workers AI takes 4 inputs: 1 customer + 3 product views
 const MAX_B64_CHARS = 7 * 1024 * 1024; // ~5 MB binary per image
 const ALLOWED_MIME = ['image/jpeg', 'image/png', 'image/webp'];
 const B64_RE = /^[A-Za-z0-9+/]+={0,2}$/;
@@ -137,74 +138,87 @@ function sniffMime(b64) {
 
 /* ----------------------------------------------------------------- prompt */
 
+function viewsText(n, base) {
+  // FLUX: product images are image 1..n ; Gemini: IMAGE 2..n+1
+  if (n <= 1) return `${base} 1`;
+  return `${base}s 1 to ${n} (different views of the same product)`;
+}
+
+/** Strict garment rules shared by both providers. */
+function garmentRules({ dupatta, details, refs }) {
+  let r =
+    `Reproduce the outfit exactly as in ${refs}: same fabric, colours, print, embroidery and its placement, ` +
+    'neckline, buttons, sleeve length, shirt length (the hem must fall at the same point on the body as in the product), ' +
+    'cut, fit and trouser style. Include every piece the product has and nothing it does not have. ';
+  if (dupatta === 'yes') r += 'The outfit HAS a dupatta: the person must wear the dupatta exactly as shown in the product images. ';
+  if (dupatta === 'no') r += 'The outfit has NO dupatta: do not add any dupatta, shawl or scarf. ';
+  if (details) r += `Product details: ${details}. `;
+  return r;
+}
+
 /**
- * Prompt for FLUX.2 [klein] (images referred to by index: image 0 = customer, image 1 = product).
- * Written as an EDIT instruction (not "a photo of...") so the model keeps image 0 and only swaps the
- * garment, and explicitly forbids copying the product model's face, pose, hands, bag or jewellery.
+ * Prompt for FLUX.2 [klein]: image 0 = customer, images 1..n = product views.
+ * Written as an EDIT instruction so the model keeps image 0 and only swaps the garment.
  */
-export function buildFluxPrompt({ category, subtype, productTitle, clientCfg, productMode }) {
+export function buildFluxPrompt({ category, subtype, productTitle, clientCfg, productMode, nProducts = 1, dupatta, details }) {
   const t = cleanText(productTitle, 120);
   const title = t ? ` (${t})` : '';
   const extra = clientCfg && clientCfg.promptNote ? ' ' + cleanText(clientCfg.promptNote, 300) : '';
-  // productMode "garment": the storefront already cut the product out (no model, face, hands or bag left).
+  const refs = viewsText(nProducts, 'image');
   const cutout = productMode === 'garment'
-    ? (category === 'jewelry'
-        ? 'Image 1 shows only the jewellery, cut out on a white background. '
-        : 'Image 1 shows only the garment, cut out on a white background, with no person in it. ')
+    ? `In ${refs} the product model's face, hair and skin were removed (white areas); they are only references for the ${category === 'jewelry' ? 'jewellery' : 'garment'}. `
     : '';
   const keep =
     'Everything else in image 0 must stay exactly the same: the same face, eyes, nose, lips, expression, skin tone, ' +
     'hair, body shape, pose, arms, hands, camera angle, framing, background and lighting. ' +
     'The person keeps exactly two arms and two hands in their original position.';
+  const noCopy = `Do not copy any person, face, hair, hands, pose, handbag, bag, purse, clutch, shoes or other accessories from ${refs}. `;
   if (category === 'jewelry') {
     const what = JEWELRY_SUBTYPES[subtype] || JEWELRY_SUBTYPES.jewelry;
     return (
-      `Edit image 0. Add only ${what} shown in image 1${title} to the person in image 0. ` + cutout +
+      `Edit image 0. Add only ${what} shown in ${refs}${title} to the person in image 0. ` + cutout +
       'Copy the jewellery exactly: same design, metal colour, stones and details, at a realistic size. ' +
-      'Do not change the clothes. Do not copy any person, face, hair, hands or other items from image 1. ' +
-      keep + ' Photorealistic, single photo, no text.' + extra
+      'Do not change the clothes. ' + noCopy + keep + ' Photorealistic, single photo, no text.' + extra
     );
   }
   return (
-    `Edit image 0. Change only the clothes of the person in image 0: dress them in the outfit shown in image 1${title}. ` + cutout +
-    'Copy the garment faithfully: same fabric, colours, print, embroidery, neckline, buttons, sleeves and length; ' +
-    'add the matching dupatta and trousers if image 1 shows them. Keep it as modest as in image 1. ' +
-    'Use image 1 only as a reference for the garment: do not copy the model, face, hair, pose, hands, ' +
-    'handbag, bag, purse, clutch, jewellery, earrings, shoes or any accessories from image 1. ' +
-    keep + ' Photorealistic, natural fabric folds, single photo, no text.' + extra
+    `Edit image 0. Change only the clothes of the person in image 0: dress them in the outfit shown in ${refs}${title}. ` +
+    cutout + garmentRules({ dupatta, details, refs }) + 'Keep it as modest as the product. ' +
+    noCopy + keep + ' Photorealistic, natural fabric folds, single photo, no text.' + extra
   );
 }
 
-export function buildPrompt({ category, subtype, productTitle, clientCfg }) {
+/** Prompt for Gemini: IMAGE 1 = customer, IMAGE 2..n+1 = product views. */
+export function buildPrompt({ category, subtype, productTitle, clientCfg, nProducts = 1, dupatta, details, productMode }) {
   const t = cleanText(productTitle, 120);
   const title = t ? ` ("${t}")` : '';
+  const refs = nProducts <= 1 ? 'IMAGE 2' : `IMAGES 2 to ${nProducts + 1} (different views of the same product)`;
   const keep =
     "Keep the person from IMAGE 1 exactly the same: same face, identity, facial features, skin tone, " +
     'hair, body shape, height, pose, expression, camera angle, lighting and background. ' +
-    'Do NOT use the face, body or hair of any model shown in IMAGE 2.';
+    `Do NOT use the face, body, hands, hair, bag or accessories of any model shown in ${refs}.`;
   const quality =
     'Result must be one photorealistic photo, natural lighting and shadows, correct scale, ' +
     'no text, no watermark, no collage, no side-by-side.';
   const extra = clientCfg && clientCfg.promptNote ? ' ' + cleanText(clientCfg.promptNote, 300) : '';
+  const cut = productMode === 'garment' ? ` In ${refs} the model's face, hair and skin were removed (white areas).` : '';
 
   if (category === 'jewelry') {
     const what = JEWELRY_SUBTYPES[subtype] || JEWELRY_SUBTYPES.jewelry;
     return (
-      'IMAGE 1 is a customer photo. IMAGE 2 is a product photo of a jewellery item' + title + '. ' +
+      `IMAGE 1 is a customer photo. ${refs} show a jewellery item${title}.${cut} ` +
       `Edit IMAGE 1 so the customer is wearing ${what}. ` +
-      'Copy the jewellery exactly from IMAGE 2: same design, metal colour, stones, size proportions and details. ' +
+      `Copy the jewellery exactly from ${refs}: same design, metal colour, stones, size proportions and details. ` +
       'Change nothing else about the customer\'s clothes. ' +
       keep + ' ' + quality + extra
     );
   }
-
   return (
-    'IMAGE 1 is a customer photo. IMAGE 2 is a product photo of a clothing item / outfit' + title +
-    ' (it may be shown on a model, on a mannequin or laid flat). ' +
+    `IMAGE 1 is a customer photo. ${refs} show a clothing item / outfit${title} ` +
+    `(it may be shown on a model, on a mannequin or laid flat).${cut} ` +
     'Edit IMAGE 1 so the customer is wearing exactly this outfit. ' +
-    'Copy the garment faithfully: same fabric, colours, print, embroidery, neckline, sleeves, length, cut and fit. ' +
-    'If IMAGE 2 includes a dupatta, shawl, trousers or other pieces of the outfit, include them styled the same way. ' +
-    'Keep the outfit as modest as it is in IMAGE 2. Remove the customer\'s original clothing where it is replaced. ' +
+    garmentRules({ dupatta, details, refs }) +
+    'Keep the outfit as modest as the product. Remove the customer\'s original clothing where it is replaced. ' +
     keep + ' ' + quality + extra
   );
 }
@@ -238,18 +252,28 @@ async function handleTryOn(request, env, origin, clientId, clientCfg) {
 
   const pErr = validImage(body.person);
   if (pErr) return json(400, { error: `Your photo could not be read (${pErr}).` }, origin);
-  const prErr = validImage(body.product);
-  if (prErr) return json(400, { error: `Product image could not be read (${prErr}).` }, origin);
+  // products: up to MAX_PRODUCT_IMAGES views (new); body.product (single) still accepted.
+  const products = (Array.isArray(body.products) && body.products.length ? body.products : [body.product]).slice(0, MAX_PRODUCT_IMAGES);
+  for (const pimg of products) {
+    const prErr = validImage(pimg);
+    if (prErr) return json(400, { error: `Product image could not be read (${prErr}).` }, origin);
+  }
+  body.products = products;
+  body.dupatta = body.dupatta === 'yes' || body.dupatta === 'no' ? body.dupatta : undefined;
+  body.details = cleanText(body.details, 300);
 
   const category = body.category === 'jewelry' ? 'jewelry' : 'clothing';
   const subtype = JEWELRY_SUBTYPES[body.subtype] ? body.subtype : 'jewelry';
-  let prompt = buildPrompt({
+  const prompt = buildPrompt({
     category,
     subtype,
     productTitle: cleanText(body.productTitle, 120),
     clientCfg,
+    nProducts: products.length,
+    dupatta: body.dupatta,
+    details: body.details,
+    productMode: body.productMode === 'garment' ? 'garment' : 'photo',
   });
-  if (body.productMode === 'garment') prompt += ' IMAGE 2 has already been cut out: it shows only the product on a white background.';
 
   const provider = providerFor(env, clientCfg);
   const countUsage = async () => {
@@ -272,13 +296,18 @@ async function runWorkersAI({ env, body, category, subtype, clientCfg, origin, c
   if (!env.AI) return json(500, { error: 'Try-on is not configured (AI binding missing).' }, origin);
   const model = clientCfg.cfModel || env.CF_MODEL || DEFAULT_CF_MODEL;
   const productMode = body.productMode === 'garment' ? 'garment' : 'photo';
-  const prompt = buildFluxPrompt({ category, subtype, productTitle: body.productTitle, clientCfg, productMode });
+  const prompt = buildFluxPrompt({
+    category, subtype, productTitle: body.productTitle, clientCfg, productMode,
+    nProducts: body.products.length, dupatta: body.dupatta, details: body.details,
+  });
   const dims = outputDims(body.person.w, body.person.h);
 
   const fd = new FormData();
   fd.append('prompt', prompt);
   fd.append('input_image_0', new Blob([b64ToBytes(body.person.data)], { type: body.person.mime }), 'person.jpg');
-  fd.append('input_image_1', new Blob([b64ToBytes(body.product.data)], { type: body.product.mime }), 'product.jpg');
+  body.products.forEach((pimg, i) => {
+    fd.append(`input_image_${i + 1}`, new Blob([b64ToBytes(pimg.data)], { type: pimg.mime }), `product${i + 1}.jpg`);
+  });
   fd.append('width', String(dims.width));
   fd.append('height', String(dims.height));
   // FormData doesn't expose its boundary; wrapping it in a Response does (per Cloudflare docs).
@@ -334,8 +363,10 @@ async function runGemini({ env, body, prompt, clientCfg, origin, countUsage }) {
     JSON.stringify({ text: prompt }) + ',' +
     JSON.stringify({ text: 'IMAGE 1 (customer):' }) + ',' +
     '{"inline_data":{"mime_type":"' + body.person.mime + '","data":"' + body.person.data + '"}},' +
-    JSON.stringify({ text: 'IMAGE 2 (product):' }) + ',' +
-    '{"inline_data":{"mime_type":"' + body.product.mime + '","data":"' + body.product.data + '"}}' +
+    body.products.map((pimg, i) =>
+      JSON.stringify({ text: `IMAGE ${i + 2} (product view ${i + 1}):` }) + ',' +
+      '{"inline_data":{"mime_type":"' + pimg.mime + '","data":"' + pimg.data + '"}}'
+    ).join(',') +
     ']}],"generationConfig":{"responseModalities":["TEXT","IMAGE"]}}';
 
   let gRes;
