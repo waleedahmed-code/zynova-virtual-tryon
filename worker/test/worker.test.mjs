@@ -220,7 +220,9 @@ test('default provider is workers-ai, works without GEMINI key', async () => {
   assert.equal(calls.length, 1);
   assert.equal(calls[0].model, '@cf/black-forest-labs/flux-2-klein-4b');
   const f = calls[0].form;
-  assert.match(f.get('prompt'), /image 0 wearing the exact outfit from image 1/);
+  assert.match(f.get('prompt'), /^Edit image 0\. Change only the clothes/);
+  assert.match(f.get('prompt'), /do not copy the model, face, hair, pose, hands, handbag, bag/);
+  assert.match(f.get('prompt'), /exactly two arms and two hands/);
   const p0 = f.get('input_image_0'), p1 = f.get('input_image_1');
   assert.equal(p0.size, 600); assert.equal(p1.size, 600);
   assert.equal(p0.type, 'image/jpeg');
@@ -284,9 +286,12 @@ test('/config returns provider + max input size with CORS', async () => {
   const r = await worker.fetch(req(null, { method: 'GET', path: '/config' }), env);
   assert.equal(r.status, 200);
   assert.equal(r.headers.get('Access-Control-Allow-Origin'), ORIGIN);
-  assert.deepEqual(await r.json(), { provider: 'workers-ai', maxInput: 504 });
+  assert.deepEqual(await r.json(), { provider: 'workers-ai', maxInput: 504, productCropTop: 0 });
   const g = await worker.fetch(req(null, { method: 'GET', path: '/config' }), makeEnv());
-  assert.deepEqual(await g.json(), { provider: 'gemini', maxInput: 1024 });
+  assert.deepEqual(await g.json(), { provider: 'gemini', maxInput: 1024, productCropTop: 0 });
+  const c = await worker.fetch(req(null, { method: 'GET', path: '/config' }),
+    makeEnv({ CLIENTS: JSON.stringify({ m: { origins: [ORIGIN], productCropTop: 0.9 } }) }));
+  assert.equal((await c.json()).productCropTop, 0.4); // clamped
 });
 
 test('/config blocked for unknown origin', async () => {
