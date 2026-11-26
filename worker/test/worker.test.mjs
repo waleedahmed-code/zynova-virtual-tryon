@@ -315,3 +315,12 @@ test('outputDims', () => {
 test('flux prompt sanitises title', () => {
   assert.ok(!buildFluxPrompt({ category: 'clothing', productTitle: 'a"\nb' }).includes('\n'));
 });
+
+test('productMode garment adds cut-out line to FLUX prompt', async () => {
+  const { env, calls } = aiEnv();
+  await worker.fetch(req({ ...okBody, productMode: 'garment' }), env);
+  assert.match(calls[0].form.get('prompt'), /Image 1 shows only the garment, cut out on a white background/);
+  const { env: env2, calls: calls2 } = aiEnv();
+  await worker.fetch(req({ ...okBody, productMode: 'evil"injection' }), env2);
+  assert.ok(!/cut out/.test(calls2[0].form.get('prompt')));
+});
