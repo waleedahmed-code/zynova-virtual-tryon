@@ -1,15 +1,16 @@
 import { test, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
-import worker, { buildPrompt } from '../src/index.js';
+import worker, { buildPrompt, buildFluxPrompt, outputDims } from '../src/index.js';
 
 const ORIGIN = 'https://miacara.pk';
 const B64 = Buffer.alloc(600, 7).toString('base64');
-const IMG = { mime: 'image/jpeg', data: B64 };
+const IMG = { mime: 'image/jpeg', data: B64, w: 378, h: 504 };
 
 function makeEnv(over = {}) {
   const store = new Map();
   return {
     GEMINI_API_KEY: 'test-key',
+    PROVIDER: 'gemini',
     CLIENTS: JSON.stringify({
       miacara: { origins: ['https://miacara.pk', 'https://www.miacara.pk/'], dailyLimit: 2 },
       off: { origins: ['https://off.com'], enabled: false },
@@ -186,4 +187,126 @@ test('per-client model override', async () => {
   const env = makeEnv({ CLIENTS: JSON.stringify({ m: { origins: [ORIGIN], model: 'gemini-3.1-flash-lite-image' } }) });
   await worker.fetch(req({ ...okBody, clientId: 'm' }), env);
   assert.match(calls[0].url, /flash-lite-image/);
+});
+
+
+/* ------------------------------------------------------- Workers AI provider */
+
+function aiEnv(over = {}) {
+  const calls = [];
+  const env = makeEnv({
+    PROVIDER: undefined,
+    GEMINI_API_KEY: undefined,
+    AI: {
+      run: async (model, input) => {
+        const form = await new Response(input.multipart.body, { headers: { 'content-type': input.multipart.contentType } }).formData();
+        calls.push({ model, form });
+        if (over.aiThrow) throw new Error(over.aiThrow);
+        return over.aiOut !== undefined ? over.aiOut : { image: '/9j/RESULTJPEG' };
+      },
+    },
+    ...over.env,
+  });
+  return { env, calls };
+}
+
+test('default provider is workers-ai, works without GEMINI key', async () => {
+  const { env, calls } = aiEnv();
+  const r = await worker.fetch(req(okBody), env);
+  assert.equal(r.status, 200);
+  const j = await r.json();
+  assert.equal(j.candidates[0].content.parts[0].inlineData.data, '/9j/RESULTJPEG');
+  assert.equal(j.candidates[0].content.parts[0].inlineData.mimeType, 'image/jpeg');
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].model, '@cf/black-forest-labs/flux-2-klein-4b');
+  const f = calls[0].form;
+  assert.match(f.get('prompt'), /image 0 wearing the exact outfit from image 1/);
+  const p0 = f.get('input_image_0'), p1 = f.get('input_image_1');
+  assert.equal(p0.size, 600); assert.equal(p1.size, 600);
+  assert.equal(p0.type, 'image/jpeg');
+  // 378x504 portrait -> 768x1024
+  assert.equal(f.get('width'), '768'); assert.equal(f.get('height'), '1024');
+  assert.equal([...env.USAGE._store.values()][0], '1');
+});
+
+test('workers-ai jewelry prompt', async () => {
+  const { env, calls } = aiEnv();
+  await worker.fetch(req({ ...okBody, category: 'jewelry', subtype: 'necklace' }), env);
+  assert.match(calls[0].form.get('prompt'), /around the neck/);
+});
+
+test('workers-ai quota error -> 429 friendly, not counted', async () => {
+  const { env } = aiEnv({ aiThrow: 'AiError: 4006: you have used up your daily free allocation of 10,000 neurons' });
+  const r = await worker.fetch(req(okBody), env);
+  assert.equal(r.status, 429);
+  assert.match((await r.json()).error, /today/);
+  assert.equal(env.USAGE._store.size, 0);
+});
+
+test('workers-ai safety error -> IMAGE_SAFETY shape', async () => {
+  const { env } = aiEnv({ aiThrow: 'NSFW content detected' });
+  const r = await worker.fetch(req(okBody), env);
+  assert.equal(r.status, 200);
+  assert.equal((await r.json()).candidates[0].finishReason, 'IMAGE_SAFETY');
+});
+
+test('workers-ai generic error -> 502', async () => {
+  const { env } = aiEnv({ aiThrow: 'boom' });
+  assert.equal((await worker.fetch(req(okBody), env)).status, 502);
+});
+
+test('workers-ai empty output -> 502', async () => {
+  const { env } = aiEnv({ aiOut: {} });
+  assert.equal((await worker.fetch(req(okBody), env)).status, 502);
+});
+
+test('workers-ai missing binding -> clear 500 message', async () => {
+  const { env } = aiEnv({ env: { AI: undefined } });
+  const r = await worker.fetch(req(okBody), env);
+  assert.equal(r.status, 500);
+  assert.match((await r.json()).error, /AI binding/);
+});
+
+test('gemini provider without key -> clear 500 message', async () => {
+  const r = await worker.fetch(req(okBody), makeEnv({ GEMINI_API_KEY: '' }));
+  assert.match((await r.json()).error, /GEMINI_API_KEY/);
+});
+
+test('per-client provider override to gemini', async () => {
+  const { env, calls } = aiEnv({ env: { GEMINI_API_KEY: 'k', CLIENTS: JSON.stringify({ m: { origins: [ORIGIN], provider: 'gemini' } }) } });
+  const r = await worker.fetch(req({ ...okBody, clientId: 'm' }), env);
+  assert.equal(r.status, 200);
+  assert.equal(calls.length, 0); // Workers AI not used
+});
+
+test('/config returns provider + max input size with CORS', async () => {
+  const { env } = aiEnv();
+  const r = await worker.fetch(req(null, { method: 'GET', path: '/config' }), env);
+  assert.equal(r.status, 200);
+  assert.equal(r.headers.get('Access-Control-Allow-Origin'), ORIGIN);
+  assert.deepEqual(await r.json(), { provider: 'workers-ai', maxInput: 504 });
+  const g = await worker.fetch(req(null, { method: 'GET', path: '/config' }), makeEnv());
+  assert.deepEqual(await g.json(), { provider: 'gemini', maxInput: 1024 });
+});
+
+test('/config blocked for unknown origin', async () => {
+  const { env } = aiEnv();
+  assert.equal((await worker.fetch(req(null, { method: 'GET', path: '/config', origin: 'https://evil.com' }), env)).status, 403);
+});
+
+test('/health reports provider + binding status', async () => {
+  const { env } = aiEnv();
+  const j = await (await worker.fetch(req(null, { method: 'GET', path: '/health' }), env)).json();
+  assert.equal(j.provider, 'workers-ai'); assert.equal(j.aiBinding, true); assert.equal(j.geminiKey, false);
+});
+
+test('outputDims', () => {
+  assert.deepEqual(outputDims(504, 504), { width: 1024, height: 1024 });
+  assert.deepEqual(outputDims(504, 378), { width: 1024, height: 768 });
+  assert.deepEqual(outputDims(100, 2000), { width: 256, height: 1024 });
+  assert.deepEqual(outputDims(undefined, undefined), { width: 768, height: 1024 });
+});
+
+test('flux prompt sanitises title', () => {
+  assert.ok(!buildFluxPrompt({ category: 'clothing', productTitle: 'a"\nb' }).includes('\n'));
 });
