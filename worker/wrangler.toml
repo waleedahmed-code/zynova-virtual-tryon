@@ -2,14 +2,23 @@ name = "zynova-virtual-tryon"
 main = "src/index.js"
 compatibility_date = "2026-11-01"
 
+# Workers AI (free tier: 10,000 neurons/day). Is ke liye koi API key nahi chahiye.
+[ai]
+binding = "AI"
+
 [vars]
+# "workers-ai" = Cloudflare FLUX.2 [klein] 4B (free tier)  |  "gemini" = Google Gemini (paid, GEMINI_API_KEY secret chahiye)
+# Kisi aik client ke liye alag provider: CLIENTS mein us ke andar "provider": "gemini"
+PROVIDER = "workers-ai"
+CF_MODEL = "@cf/black-forest-labs/flux-2-klein-4b"
 GEMINI_MODEL = "gemini-3.1-flash-image"
 
 # Har naya client yahan add karein. Key = clientId (Shopify section settings mein bhi yehi likhna hai).
 # origins = store ke saare domains (custom domain, www, aur .myshopify.com) — bina "/" ke end mein.
 # dailyLimit = roz ki max try-ons (0 = koi limit nahi; USAGE KV binding chahiye).
 # promptNote (optional) = is client ke liye extra AI hidayat.
-# model (optional) = is client ke liye alag Gemini model.
+# provider (optional) = "workers-ai" ya "gemini" sirf is client ke liye.
+# model (optional) = is client ke liye alag Gemini model.  cfModel (optional) = alag Workers AI model.
 CLIENTS = '''
 {
   "miacara": {
