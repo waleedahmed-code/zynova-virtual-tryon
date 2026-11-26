@@ -17,6 +17,7 @@ GEMINI_MODEL = "gemini-3.1-flash-image"
 # origins = store ke saare domains (custom domain, www, aur .myshopify.com) — bina "/" ke end mein.
 # dailyLimit = roz ki max try-ons (0 = koi limit nahi; USAGE KV binding chahiye).
 # promptNote (optional) = is client ke liye extra AI hidayat.
+# productCropTop (optional, 0-0.4) = product photo ka upar ka itna hissa kaat do (model ka sar), sirf kapron pe. 0.14 = 14%.
 # provider (optional) = "workers-ai" ya "gemini" sirf is client ke liye.
 # model (optional) = is client ke liye alag Gemini model.  cfModel (optional) = alag Workers AI model.
 CLIENTS = '''
@@ -24,6 +25,7 @@ CLIENTS = '''
   "miacara": {
     "origins": ["https://miacara.pk", "https://www.miacara.pk", "https://miacara.myshopify.com"],
     "dailyLimit": 300,
+    "productCropTop": 0.14,
     "promptNote": "Products are Pakistani women's eastern wear (kurta, shalwar/trousers, dupatta)."
   }
 }
