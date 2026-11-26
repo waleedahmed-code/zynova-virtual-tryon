@@ -9,8 +9,16 @@
  *     → Gemini JSON is streamed straight back to the browser (keeps Worker CPU tiny,
  *       so it stays inside the free plan's CPU limit)
  *
+ * Providers:
+ *   "workers-ai" (default, FREE tier: 10,000 neurons/day) — Cloudflare FLUX.2 [klein] via the AI binding
+ *   "gemini"     (paid, best quality)                      — needs GEMINI_API_KEY secret
+ *   Both return the same JSON shape to the browser (candidates[].content.parts[].inlineData).
+ *
  * Config (wrangler.toml / dashboard):
- *   GEMINI_API_KEY   secret   — `wrangler secret put GEMINI_API_KEY`
+ *   PROVIDER         var      — "workers-ai" (default) or "gemini"; per client: CLIENTS.x.provider
+ *   AI               binding  — Workers AI ([ai] binding = "AI")
+ *   CF_MODEL         var      — optional, default @cf/black-forest-labs/flux-2-klein-4b
+ *   GEMINI_API_KEY   secret   — only for provider "gemini": `wrangler secret put GEMINI_API_KEY`
  *   CLIENTS          var      — JSON, see wrangler.toml
  *   GEMINI_MODEL     var      — optional, default gemini-3.1-flash-image
  *   RATE_LIMITER     binding  — optional, per-IP limit (Workers Rate Limiting)
@@ -18,6 +26,10 @@
  */
 
 const DEFAULT_MODEL = 'gemini-3.1-flash-image';
+const DEFAULT_CF_MODEL = '@cf/black-forest-labs/flux-2-klein-4b';
+const CF_MAX_INPUT = 504; // Workers AI FLUX.2: input images must be smaller than 512x512
+const GEMINI_MAX_INPUT = 1024;
+const OUT_LONG_SIDE = 1024;
 const MAX_B64_CHARS = 7 * 1024 * 1024; // ~5 MB binary per image
 const ALLOWED_MIME = ['image/jpeg', 'image/png', 'image/webp'];
 const B64_RE = /^[A-Za-z0-9+/]+={0,2}$/;
@@ -47,7 +59,7 @@ function parseClients(env) {
 function corsHeaders(origin) {
   return {
     'Access-Control-Allow-Origin': origin,
-    'Access-Control-Allow-Methods': 'POST, OPTIONS',
+    'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
     'Access-Control-Allow-Headers': 'Content-Type',
     'Access-Control-Max-Age': '86400',
     Vary: 'Origin',
@@ -96,7 +108,58 @@ function todayKey(clientId) {
   return `${clientId}:${new Date().toISOString().slice(0, 10)}`;
 }
 
+function providerFor(env, clientCfg) {
+  const p = String((clientCfg && clientCfg.provider) || env.PROVIDER || 'workers-ai').toLowerCase();
+  return p === 'gemini' ? 'gemini' : 'workers-ai';
+}
+
+/** Output size: keep the customer photo's aspect ratio, long side OUT_LONG_SIDE, multiples of 16, 256..1920 */
+export function outputDims(w, h) {
+  w = Number(w) || 768; h = Number(h) || 1024;
+  const s = OUT_LONG_SIDE / Math.max(w, h);
+  const fit = (v) => Math.min(1920, Math.max(256, Math.round((v * s) / 16) * 16));
+  return { width: fit(w), height: fit(h) };
+}
+
+function b64ToBytes(b64) {
+  const bin = atob(b64);
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
+}
+
+function sniffMime(b64) {
+  if (b64.startsWith('/9j/')) return 'image/jpeg';
+  if (b64.startsWith('iVBOR')) return 'image/png';
+  if (b64.startsWith('UklGR')) return 'image/webp';
+  return 'image/jpeg';
+}
+
 /* ----------------------------------------------------------------- prompt */
+
+/** Prompt for FLUX.2 (images are referred to by index: image 0 = customer, image 1 = product) */
+export function buildFluxPrompt({ category, subtype, productTitle, clientCfg }) {
+  const t = cleanText(productTitle, 120);
+  const title = t ? ` (${t})` : '';
+  const keep =
+    'Keep the person from image 0 exactly the same: same face, identity, skin tone, hair, body shape, pose, ' +
+    'expression, camera angle, lighting and background. Do not use the face or body of any model in image 1.';
+  const extra = clientCfg && clientCfg.promptNote ? ' ' + cleanText(clientCfg.promptNote, 300) : '';
+  if (category === 'jewelry') {
+    const what = JEWELRY_SUBTYPES[subtype] || JEWELRY_SUBTYPES.jewelry;
+    return (
+      `Photo of the person from image 0 wearing ${what} from image 1${title}. ` +
+      'Copy the jewellery exactly from image 1: same design, metal colour, stones and details, realistic scale. ' +
+      'Keep the person\'s clothes unchanged. ' + keep + ' Photorealistic, natural shadows, single photo, no text.' + extra
+    );
+  }
+  return (
+    `Photo of the person from image 0 wearing the exact outfit from image 1${title}. ` +
+    'Copy the garment faithfully from image 1: same fabric, colours, print, embroidery, neckline, sleeves, length and cut; ' +
+    'include the dupatta, shawl or trousers if image 1 shows them. Keep it as modest as in image 1. ' +
+    keep + ' Photorealistic, natural fabric folds and shadows, single photo, no text.' + extra
+  );
+}
 
 export function buildPrompt({ category, subtype, productTitle, clientCfg }) {
   const t = cleanText(productTitle, 120);
@@ -173,6 +236,78 @@ async function handleTryOn(request, env, origin, clientId, clientCfg) {
     clientCfg,
   });
 
+  const provider = providerFor(env, clientCfg);
+  const countUsage = async () => {
+    if (env.USAGE && cap > 0) {
+      const write = env.USAGE.put(todayKey(clientId), String(used + 1), { expirationTtl: 60 * 60 * 48 });
+      if (request.ctx && request.ctx.waitUntil) request.ctx.waitUntil(write);
+      else await write;
+    }
+  };
+
+  if (provider === 'workers-ai') {
+    return runWorkersAI({ env, body, category, subtype, clientCfg, origin, countUsage });
+  }
+  return runGemini({ env, body, prompt, clientCfg, origin, countUsage });
+}
+
+/* ------------------------------------------------------------ Workers AI */
+
+async function runWorkersAI({ env, body, category, subtype, clientCfg, origin, countUsage }) {
+  if (!env.AI) return json(500, { error: 'Try-on is not configured (AI binding missing).' }, origin);
+  const model = clientCfg.cfModel || env.CF_MODEL || DEFAULT_CF_MODEL;
+  const prompt = buildFluxPrompt({ category, subtype, productTitle: body.productTitle, clientCfg });
+  const dims = outputDims(body.person.w, body.person.h);
+
+  const fd = new FormData();
+  fd.append('prompt', prompt);
+  fd.append('input_image_0', new Blob([b64ToBytes(body.person.data)], { type: body.person.mime }), 'person.jpg');
+  fd.append('input_image_1', new Blob([b64ToBytes(body.product.data)], { type: body.product.mime }), 'product.jpg');
+  fd.append('width', String(dims.width));
+  fd.append('height', String(dims.height));
+  // FormData doesn't expose its boundary; wrapping it in a Response does (per Cloudflare docs).
+  const wrapped = new Response(fd);
+
+  let out;
+  try {
+    out = await env.AI.run(model, {
+      multipart: { body: wrapped.body, contentType: wrapped.headers.get('content-type') },
+    });
+  } catch (err) {
+    const msg = String((err && err.message) || err);
+    console.log('workers-ai error', msg);
+    if (/4006|neurons|daily free allocation|capacity|rate limit|429/i.test(msg)) {
+      return json(429, { error: 'Try-on has reached today\'s limit. Please try again tomorrow.', code: 'AI_LIMIT' }, origin);
+    }
+    if (/nsfw|safety|moderat|flagged/i.test(msg)) {
+      return new Response(JSON.stringify({ candidates: [{ finishReason: 'IMAGE_SAFETY', content: { parts: [] } }] }), {
+        status: 200, headers: { 'Content-Type': 'application/json', ...corsHeaders(origin) },
+      });
+    }
+    return json(502, { error: 'AI service error. Please try again.', code: 'AI_ERROR' }, origin);
+  }
+
+  const img = out && typeof out.image === 'string' ? out.image : null;
+  if (!img) {
+    console.log('workers-ai: no image in response', out && Object.keys(out));
+    return json(502, { error: 'AI service returned no image. Please try again.', code: 'AI_EMPTY' }, origin);
+  }
+  await countUsage();
+
+  // Same shape as Gemini so the storefront code handles both. Concatenated to avoid re-serialising ~1MB.
+  const payload =
+    '{"provider":"workers-ai","candidates":[{"content":{"parts":[{"inlineData":{"mimeType":"' +
+    sniffMime(img) + '","data":"' + img + '"}}]}}]}';
+  return new Response(payload, {
+    status: 200,
+    headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', ...corsHeaders(origin) },
+  });
+}
+
+/* ---------------------------------------------------------------- Gemini */
+
+async function runGemini({ env, body, prompt, clientCfg, origin, countUsage }) {
+  if (!env.GEMINI_API_KEY) return json(500, { error: 'Try-on is not configured (GEMINI_API_KEY missing).' }, origin);
   const model = clientCfg.model || env.GEMINI_MODEL || DEFAULT_MODEL;
   const base = (env.GEMINI_BASE || 'https://generativelanguage.googleapis.com').replace(/\/+$/, '');
   const url = `${base}/v1beta/models/${encodeURIComponent(model)}:generateContent`;
@@ -210,12 +345,7 @@ async function handleTryOn(request, env, origin, clientId, clientCfg) {
     return json(status, { error: msg, code: detail || gRes.status }, origin);
   }
 
-  // Count usage only for successful upstream calls
-  if (env.USAGE && cap > 0) {
-    const write = env.USAGE.put(todayKey(clientId), String(used + 1), { expirationTtl: 60 * 60 * 48 });
-    if (request.ctx && request.ctx.waitUntil) request.ctx.waitUntil(write);
-    else await write;
-  }
+  await countUsage();
 
   // Stream Gemini's JSON straight through — the browser extracts the image.
   return new Response(gRes.body, {
@@ -231,18 +361,31 @@ export default {
     const clients = parseClients(env);
     const match = clientForOrigin(clients, origin);
 
-    if (url.pathname === '/health') return json(200, { ok: true, clients: Object.keys(clients).length });
+    if (url.pathname === '/health') {
+      const provider = providerFor(env, null);
+      return json(200, {
+        ok: true,
+        clients: Object.keys(clients).length,
+        provider,
+        aiBinding: !!env.AI,
+        geminiKey: !!env.GEMINI_API_KEY,
+      });
+    }
 
-    if (url.pathname !== '/tryon') return json(404, { error: 'Not found' });
+    if (url.pathname !== '/tryon' && url.pathname !== '/config') return json(404, { error: 'Not found' }, match ? origin : '');
 
     if (!match) return json(403, { error: 'This store is not enabled for try-on.' });
     const [clientId, clientCfg] = match;
     if (clientCfg.enabled === false) return json(403, { error: 'Try-on is disabled for this store.' }, origin);
 
     if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers: corsHeaders(origin) });
-    if (request.method !== 'POST') return json(405, { error: 'Method not allowed' }, origin);
 
-    if (!env.GEMINI_API_KEY) return json(500, { error: 'Try-on is not configured.' }, origin);
+    if (url.pathname === '/config') {
+      const provider = providerFor(env, clientCfg);
+      return json(200, { provider, maxInput: provider === 'gemini' ? GEMINI_MAX_INPUT : CF_MAX_INPUT }, origin);
+    }
+
+    if (request.method !== 'POST') return json(405, { error: 'Method not allowed' }, origin);
 
     const len = Number(request.headers.get('Content-Length') || 0);
     if (len > 2 * MAX_B64_CHARS + 20000) return json(413, { error: 'Images are too large.' }, origin);
